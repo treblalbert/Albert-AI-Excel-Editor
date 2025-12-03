@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Albert's AI Excel Editor</title>
+    <link rel="stylesheet" href="assets/css/styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1 id="mainTitle">🤖 Albert's AI Excel Editor</h1>
+                <p id="subtitle">Intelligent spreadsheet editing powered by AI</p>
+            </div>
+            <div class="language-selector">
+                <button class="lang-btn active" data-lang="en">English</button>
+                <button class="lang-btn" data-lang="es">Español</button>
+                <button class="lang-btn" data-lang="ca">Català</button>
+            </div>
+        </div>
+
+        <div id="apiSetup" class="api-setup">
+            <h2 id="welcomeTitle">Welcome! Let's Get Started</h2>
+            <p id="welcomeText">First, load a text file containing your OpenAI API key to unlock AI-powered features.</p>
+            <div class="control-group">
+                <input type="file" id="apiKeyFile" accept=".txt">
+            </div>
+            <p id="securityNote" style="margin-top: 20px; font-size: 0.9em; color: #666;">
+                Your API key is stored securely in your browser and never leaves your device.
+            </p>
+        </div>
+
+        <div id="mainApp" class="hidden">
+            <div class="controls">
+                <div class="control-group">
+                    <label id="loadFileLabel">Load Excel File (.xlsx, .xls, .csv)</label>
+                    <input type="file" id="excelFile" accept=".xlsx,.xls,.csv">
+                </div>
+                <div class="options-row">
+                    <label class="toggle-option">
+                        <input type="checkbox" id="highlightToggle">
+                        <span class="toggle-slider"></span>
+                        <span id="highlightLabel">Highlight AI changes</span>
+                    </label>
+                </div>
+            </div>
+
+            <div id="status"></div>
+
+            <div class="main-content">
+                <div class="table-section">
+                    <div class="table-controls">
+                        <button id="addRowBtn" disabled><span id="addRowText">➕ Add Row</span></button>
+                        <button id="addColBtn" disabled><span id="addColText">➕ Add Column</span></button>
+                        <button id="compareBtn" class="compare-btn" disabled><span id="compareText">🔄 Compare Changes</span></button>
+                        <button id="downloadBtn" disabled><span id="downloadText">⬇️ Download .xlsx</span></button>
+                    </div>
+                    <div class="table-wrapper">
+                        <table id="dataTable">
+                            <thead id="tableHead"></thead>
+                            <tbody id="tableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="chat-section">
+                    <div class="chat-header"><span id="chatHeaderText">💬 AI Assistant</span></div>
+                    <div class="chat-messages" id="chatMessages"></div>
+                    <div class="chat-input-area">
+                        <textarea id="aiPrompt" disabled></textarea>
+                        <div class="chat-buttons">
+                            <button id="aiButton" disabled><span id="sendText">Send ✨</span></button>
+                            <button id="undoBtn" class="undo-btn" disabled><span id="undoText">↶ Undo</span></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Compare Modal -->
+    <div id="compareModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="compareModalTitle">Compare Changes</h3>
+                <button class="modal-close" id="closeCompareModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="compare-container">
+                    <div class="compare-panel">
+                        <h4 id="beforeLabel">Before</h4>
+                        <div class="compare-table-wrapper">
+                            <table id="beforeTable">
+                                <thead id="beforeTableHead"></thead>
+                                <tbody id="beforeTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="compare-panel">
+                        <h4 id="afterLabel">After</h4>
+                        <div class="compare-table-wrapper">
+                            <table id="afterTable">
+                                <thead id="afterTableHead"></thead>
+                                <tbody id="afterTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="assets/js/translations.js"></script>
+    <script src="assets/js/app.js"></script>
+</body>
+</html>

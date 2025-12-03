@@ -1,0 +1,47 @@
+{
+  "name": "alberts-ai-excel-editor",
+  "version": "1.0.0",
+  "description": "AI-powered Excel Editor by Albert",
+  "main": "main.js",
+  "author": "Albert",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.albert.excelEditor",
+    "productName": "Alberts AI Excel Editor",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Alberts AI Excel Editor"
+    },
+    "files": [
+      "main.js",
+      "src/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  }
+}
