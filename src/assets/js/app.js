@@ -424,6 +424,7 @@ function renderTable() {
             input.value = row.data[colIndex] !== undefined ? row.data[colIndex] : '';
             input.dataset.row = row.originalIndex;
             input.dataset.col = colIndex;
+            input.readOnly = true; // Start as read-only, double-click to edit
             
             // Cell events
             input.addEventListener('change', (e) => {
@@ -433,7 +434,21 @@ function renderTable() {
             
             input.addEventListener('mousedown', (e) => handleCellMouseDown(e, row.originalIndex, colIndex));
             input.addEventListener('mouseenter', (e) => handleCellMouseEnter(e, row.originalIndex, colIndex));
-            input.addEventListener('focus', () => handleCellFocus(row.originalIndex, colIndex));
+            
+            // Double-click to enter edit mode
+            input.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                enterEditMode(input);
+            });
+            
+            // Handle keyboard navigation and editing
+            input.addEventListener('keydown', (e) => handleCellKeyDown(e, input, row.originalIndex, colIndex));
+            
+            // Exit edit mode on blur
+            input.addEventListener('blur', () => {
+                input.readOnly = true;
+                input.classList.remove('editing');
+            });
             
             td.appendChild(input);
             
@@ -469,10 +484,26 @@ function isLastSelectedCell(rowIndex, colIndex) {
 
 // Cell selection handlers
 
+// Track if we need to re-render (only when selection actually changes)
+let lastClickTime = 0;
+let lastClickCell = null;
+
 function handleCellMouseDown(e, rowIndex, colIndex) {
     if (e.button !== 0) return; // Left click only
     
     const cellKey = `${rowIndex}-${colIndex}`;
+    const now = Date.now();
+    
+    // Detect double-click (within 300ms on same cell)
+    if (lastClickCell === cellKey && (now - lastClickTime) < 300) {
+        // Double-click detected - don't process as selection, let dblclick handler work
+        lastClickTime = 0;
+        lastClickCell = null;
+        return;
+    }
+    
+    lastClickTime = now;
+    lastClickCell = cellKey;
     
     // Save current state before starting selection (for ESC cancellation)
     preSelectionState = {
@@ -481,10 +512,14 @@ function handleCellMouseDown(e, rowIndex, colIndex) {
         selectionEnd: selectionEnd ? { ...selectionEnd } : null
     };
     
+    // Check if selection will actually change
+    let selectionChanged = false;
+    
     if (e.shiftKey && selectionStart) {
         // Extend selection from existing start point
         isSelecting = true;
         extendSelection(rowIndex, colIndex);
+        selectionChanged = true;
     } else if (e.ctrlKey || e.metaKey) {
         // Toggle single cell in selection (add/remove from multi-select)
         if (selectedCells.has(cellKey)) {
@@ -492,18 +527,65 @@ function handleCellMouseDown(e, rowIndex, colIndex) {
         } else {
             selectedCells.add(cellKey);
         }
-        // Don't start drag selection for Ctrl+click
         isSelecting = false;
+        selectionChanged = true;
     } else {
+        // Check if we're clicking on an already-selected single cell
+        if (selectedCells.size === 1 && selectedCells.has(cellKey)) {
+            // Same cell - don't re-render, allow double-click to work
+            isSelecting = true; // Still enable drag extension
+            return;
+        }
+        
         // Start new selection - clear previous and begin fresh
         isSelecting = true;
         selectionStart = { row: rowIndex, col: colIndex };
         selectionEnd = { row: rowIndex, col: colIndex };
         selectedCells.clear();
         selectedCells.add(cellKey);
+        selectionChanged = true;
     }
     
-    renderTable();
+    if (selectionChanged) {
+        // Update selection visuals without full re-render
+        updateSelectionVisuals();
+    }
+}
+
+// Lightweight selection visual update without full re-render
+function updateSelectionVisuals() {
+    // Remove old selection classes
+    document.querySelectorAll('td.selected').forEach(td => td.classList.remove('selected'));
+    document.querySelectorAll('.fill-handle').forEach(fh => fh.remove());
+    
+    // Add new selection classes
+    selectedCells.forEach(cellKey => {
+        const [r, c] = cellKey.split('-').map(Number);
+        const input = document.querySelector(`input[data-row="${r}"][data-col="${c}"]`);
+        if (input && input.parentElement) {
+            input.parentElement.classList.add('selected');
+        }
+    });
+    
+    // Add fill handle to the last selected cell
+    if (selectedCells.size > 0) {
+        let maxRow = -1, maxCol = -1;
+        selectedCells.forEach(key => {
+            const [r, c] = key.split('-').map(Number);
+            if (r > maxRow || (r === maxRow && c > maxCol)) {
+                maxRow = r;
+                maxCol = c;
+            }
+        });
+        
+        const lastInput = document.querySelector(`input[data-row="${maxRow}"][data-col="${maxCol}"]`);
+        if (lastInput && lastInput.parentElement) {
+            const fillHandle = document.createElement('div');
+            fillHandle.className = 'fill-handle';
+            fillHandle.addEventListener('mousedown', (e) => startFillHandle(e, maxRow, maxCol));
+            lastInput.parentElement.appendChild(fillHandle);
+        }
+    }
 }
 
 function handleCellMouseEnter(e, rowIndex, colIndex) {
@@ -512,7 +594,7 @@ function handleCellMouseEnter(e, rowIndex, colIndex) {
     } else if (isSelecting && e.buttons === 1) {
         // Only extend selection if mouse button is still held down
         extendSelection(rowIndex, colIndex);
-        renderTable();
+        updateSelectionVisuals();
     }
 }
 
@@ -522,6 +604,125 @@ function handleCellFocus(rowIndex, colIndex) {
     if (!isSelecting) {
         // Don't auto-select on focus - let mousedown handle it
         // This prevents the re-selection issue
+    }
+}
+
+// Enter edit mode for a cell
+function enterEditMode(input) {
+    input.readOnly = false;
+    input.classList.add('editing');
+    input.focus();
+    input.select(); // Select all text for easy replacement
+}
+
+// Handle keyboard navigation and editing in cells
+function handleCellKeyDown(e, input, rowIndex, colIndex) {
+    const isEditing = !input.readOnly;
+    
+    // F2 to toggle edit mode
+    if (e.key === 'F2') {
+        e.preventDefault();
+        if (isEditing) {
+            input.readOnly = true;
+            input.classList.remove('editing');
+        } else {
+            enterEditMode(input);
+        }
+        return;
+    }
+    
+    // Enter to start editing or confirm and move down
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (isEditing) {
+            // Confirm edit and move down
+            input.blur();
+            navigateToCell(rowIndex + 1, colIndex);
+        } else {
+            // Start editing
+            enterEditMode(input);
+        }
+        return;
+    }
+    
+    // Shift+Enter to move up
+    if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        if (isEditing) input.blur();
+        navigateToCell(rowIndex - 1, colIndex);
+        return;
+    }
+    
+    // Tab to move right, Shift+Tab to move left
+    if (e.key === 'Tab') {
+        e.preventDefault();
+        if (isEditing) input.blur();
+        if (e.shiftKey) {
+            navigateToCell(rowIndex, colIndex - 1);
+        } else {
+            navigateToCell(rowIndex, colIndex + 1);
+        }
+        return;
+    }
+    
+    // Arrow keys navigation (only when not editing)
+    if (!isEditing) {
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            navigateToCell(rowIndex - 1, colIndex);
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            navigateToCell(rowIndex + 1, colIndex);
+        } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            navigateToCell(rowIndex, colIndex - 1);
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            navigateToCell(rowIndex, colIndex + 1);
+        }
+        
+        // Start editing if user types a character
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            // Clear cell and start typing
+            input.value = '';
+            enterEditMode(input);
+        }
+    }
+    
+    // Escape to cancel editing
+    if (e.key === 'Escape' && isEditing) {
+        e.preventDefault();
+        e.stopPropagation();
+        // Restore original value
+        input.value = workbookData[rowIndex][colIndex] !== undefined ? workbookData[rowIndex][colIndex] : '';
+        input.readOnly = true;
+        input.classList.remove('editing');
+    }
+}
+
+// Navigate to a specific cell
+function navigateToCell(rowIndex, colIndex) {
+    // Clamp to valid range
+    rowIndex = Math.max(0, Math.min(rowIndex, workbookData.length - 1));
+    colIndex = Math.max(0, Math.min(colIndex, headers.length - 1));
+    
+    const input = document.querySelector(`input[data-row="${rowIndex}"][data-col="${colIndex}"]`);
+    if (input) {
+        // Update selection
+        const cellKey = `${rowIndex}-${colIndex}`;
+        selectedCells.clear();
+        selectedCells.add(cellKey);
+        selectionStart = { row: rowIndex, col: colIndex };
+        selectionEnd = { row: rowIndex, col: colIndex };
+        
+        input.focus();
+        renderTable();
+        
+        // Re-focus after render
+        setTimeout(() => {
+            const newInput = document.querySelector(`input[data-row="${rowIndex}"][data-col="${colIndex}"]`);
+            if (newInput) newInput.focus();
+        }, 0);
     }
 }
 
@@ -790,6 +991,27 @@ document.addEventListener('mouseup', (e) => {
 
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
+    // Check if we're currently editing a cell (input is focused and not read-only)
+    const activeEl = document.activeElement;
+    const isEditingCell = activeEl && 
+                          activeEl.tagName === 'INPUT' && 
+                          activeEl.dataset.row !== undefined && 
+                          !activeEl.readOnly;
+    
+    // If editing a cell, let normal browser behavior handle copy/cut/paste/select
+    if (isEditingCell) {
+        // Only handle Escape to exit edit mode
+        if (e.key === 'Escape') {
+            activeEl.readOnly = true;
+            activeEl.classList.remove('editing');
+            e.preventDefault();
+        }
+        // Let all other keys work normally for text editing (Ctrl+C, Ctrl+V, etc.)
+        return;
+    }
+    
+    // Not editing - handle cell-level shortcuts
+    
     // Copy (Ctrl+C)
     if ((e.ctrlKey || e.metaKey) && e.key === 'c' && selectedCells.size > 0) {
         e.preventDefault();
@@ -826,9 +1048,8 @@ document.addEventListener('keydown', (e) => {
         fillRight();
     }
     
-    // Select all (Ctrl+A) when in table
+    // Select all (Ctrl+A) when in table but not editing
     if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-        const activeEl = document.activeElement;
         if (activeEl && activeEl.tagName === 'INPUT' && activeEl.dataset.row !== undefined) {
             e.preventDefault();
             selectAllCells();
@@ -1379,18 +1600,15 @@ aiButton.addEventListener('click', async () => {
     addChatMessage('ai', t('processing'));
 
     try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [
-                    {
-                        role: 'system',
-                        content: `You are a helpful assistant that can answer questions about spreadsheet data AND modify the data when requested.
+        // Smart data preparation - extract only relevant rows/columns
+        const extraction = prepareDataForAI(workbookData, headers, prompt);
+        
+        // Show context info if working with partial data
+        if (extraction.isPartialData && extraction.context) {
+            addChatMessage('system', `📊 ${extraction.context}`);
+        }
+        
+        const systemPrompt = `You are a helpful assistant that can answer questions about spreadsheet data AND modify the data when requested.
 
 IMPORTANT: You must determine if the user is:
 1. ASKING A QUESTION about the data (e.g., "what's the total?", "how many rows?", "which item has the highest value?")
@@ -1403,30 +1621,40 @@ For MODIFICATIONS: Return JSON with format:
 {"type": "modification", "headers": [...], "data": [[...], [...]], "description": "Brief description of what was changed"}
 
 CRITICAL RULES FOR MODIFICATIONS:
-- You MUST return ALL rows from the original data, not just the modified ones
-- If the user asks to modify rows 1-3, you must still include rows 4, 5, 6... and ALL other rows unchanged
-- NEVER delete or omit rows unless the user explicitly asks to delete them
-- The "data" array must contain EVERY row from the original, with only the requested changes applied
-- Preserve all original values that were not explicitly asked to be changed
-- The number of rows in your response should match the original unless user asked to add/remove rows
+- Return ALL rows from the data I give you (with your modifications applied)
+- NEVER omit or delete rows unless explicitly asked
+- Only modify what the user asks for, preserve everything else
+- The headers array should match the columns I sent you
 
-Always analyze the data carefully and provide accurate responses. For calculations, show your work when relevant.`
-                    },
-                    {
-                        role: 'user',
-                        content: `Spreadsheet headers: ${JSON.stringify(headers)}
-Spreadsheet data (${workbookData.length} rows): ${JSON.stringify(workbookData)}
+Always respond with valid JSON only. No markdown, no code blocks, no extra text.`;
 
-User request: ${prompt}`
-                    }
+        const userContent = `Spreadsheet headers: ${JSON.stringify(extraction.headersToSend)}
+Data (${extraction.dataToSend.length} rows): ${JSON.stringify(extraction.dataToSend)}
+${extraction.context ? `\nContext: ${extraction.context}` : ''}
+${extraction.isPartialData ? `\nNote: This is a subset of the full data. Full dataset has ${workbookData.length} rows and ${headers.length} columns.` : ''}
+
+User request: ${prompt}`;
+
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userContent }
                 ],
                 temperature: 0.3,
-                max_tokens: 4000
+                max_tokens: 16000 // Increased for larger responses
             })
         });
 
         if (!response.ok) {
-            throw new Error(`API error: ${response.status}`);
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(`API error: ${response.status} - ${errorData.error?.message || 'Unknown error'}`);
         }
 
         const result = await response.json();
@@ -1439,45 +1667,57 @@ User request: ${prompt}`
             lastAiMsg.remove();
         }
         
-        // Parse response
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error('Invalid response format');
-        
-        const parsed = JSON.parse(jsonMatch[0]);
+        // Parse response - try to extract JSON
+        let parsed;
+        try {
+            // First try direct parse
+            parsed = JSON.parse(content);
+        } catch (e) {
+            // Try to extract JSON from response (might have extra text)
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                // If no JSON found, treat as a plain text answer
+                addChatMessage('ai', content);
+                history.pop();
+                return;
+            }
+            try {
+                parsed = JSON.parse(jsonMatch[0]);
+            } catch (e2) {
+                throw new Error(t('invalidResponseFormat') + ': ' + e2.message);
+            }
+        }
         
         if (parsed.type === 'question') {
             addChatMessage('ai', parsed.answer);
             history.pop();
         } else if (parsed.type === 'modification' && parsed.headers && parsed.data) {
+            // Apply modifications - merge back into full dataset
             const oldHeaders = [...headers];
             const oldData = workbookData.map(row => [...row]);
             
-            const mergeResult = mergeAIChangesIntoOriginal(
-                oldData, 
-                parsed.data, 
-                oldHeaders, 
-                parsed.headers, 
+            // SMART MERGE: Apply AI changes back to the correct positions
+            const mergeResult = mergePartialAIChanges(
+                oldData,
+                oldHeaders,
+                parsed.data,
+                parsed.headers,
+                extraction.rowIndices,
+                extraction.colIndices,
                 prompt
             );
             
             headers = mergeResult.headers;
             workbookData = mergeResult.data;
             
-            if (workbookData.length < oldData.length && !userAskedToDeleteRows(prompt)) {
-                workbookData = oldData.map(row => [...row]);
-                addChatMessage('system', '🛡️ Emergency protection activated - restored all original rows.');
-            }
-            
             const { changes, modified } = detectChanges(oldHeaders, oldData, headers, workbookData);
             modifiedCells = modified;
             
-            // Store for compare feature
             lastAIChange = {
                 before: { headers: oldHeaders, data: oldData },
                 after: { headers: headers, data: workbookData }
             };
             
-            // Save to AI history for granular undo
             const description = parsed.description || changes.join(', ') || 'Changes applied';
             saveAIState(description, prompt);
             
@@ -1492,47 +1732,12 @@ User request: ${prompt}`
             if (changes.length > 0 && !parsed.description) {
                 addChatMessage('ai', `Details: ${changes.join(', ')}`);
             }
+        } else if (parsed.answer || parsed.response || parsed.message) {
+            // Handle various question response formats
+            addChatMessage('ai', parsed.answer || parsed.response || parsed.message);
+            history.pop();
         } else {
-            // Fallback
-            if (parsed.headers && parsed.data) {
-                const oldHeaders = [...headers];
-                const oldData = workbookData.map(row => [...row]);
-                
-                const mergeResult = mergeAIChangesIntoOriginal(
-                    oldData, 
-                    parsed.data, 
-                    oldHeaders, 
-                    parsed.headers, 
-                    prompt
-                );
-                
-                headers = mergeResult.headers;
-                workbookData = mergeResult.data;
-                
-                if (workbookData.length < oldData.length && !userAskedToDeleteRows(prompt)) {
-                    workbookData = oldData.map(row => [...row]);
-                    addChatMessage('system', '🛡️ Emergency protection activated - restored all original rows.');
-                }
-                
-                const { changes, modified } = detectChanges(oldHeaders, oldData, headers, workbookData);
-                modifiedCells = modified;
-                
-                lastAIChange = {
-                    before: { headers: oldHeaders, data: oldData },
-                    after: { headers: headers, data: workbookData }
-                };
-                
-                saveAIState('Changes applied', prompt);
-                
-                renderTable();
-                
-                if (mergeResult.message) {
-                    addChatMessage('system', mergeResult.message);
-                }
-                addChatMessage('ai', t('changesApplied'));
-            } else {
-                throw new Error('Invalid data structure');
-            }
+            throw new Error(t('invalidResponseFormat'));
         }
     } catch (error) {
         const messages = chatMessages.querySelectorAll('.message.ai');
@@ -1541,13 +1746,491 @@ User request: ${prompt}`
             lastAiMsg.remove();
         }
         
-        addChatMessage('ai', t('apiError', { error: error.message }));
-        showStatus(t('apiError', { error: error.message }), 'error');
+        // Provide more helpful error messages
+        let errorMessage = error.message;
+        if (error.message.includes('API error: 429')) {
+            errorMessage = t('rateLimitError') || 'Rate limit exceeded. Please wait a moment and try again.';
+        } else if (error.message.includes('API error: 400')) {
+            errorMessage = t('requestTooLarge') || 'Request too large. Try being more specific about which rows/columns to modify.';
+        } else if (error.message.includes('API error: 401')) {
+            errorMessage = t('invalidApiKey') || 'Invalid API key. Please check your OpenAI API key.';
+        } else if (error.message.includes('API error: 500') || error.message.includes('API error: 503')) {
+            errorMessage = t('serverError') || 'OpenAI server error. Please try again later.';
+        } else if (error.message.includes('Invalid response format') || error.message.includes('JSON')) {
+            errorMessage = t('invalidResponseFormat') + ' ' + (t('trySimpler') || 'Try a simpler request.');
+        }
+        
+        addChatMessage('ai', t('apiError', { error: errorMessage }));
+        showStatus(t('apiError', { error: errorMessage }), 'error');
         history.pop();
     } finally {
         updateButtonStates();
     }
 });
+
+// SMART MERGE: Merge partial AI changes back into the full dataset
+function mergePartialAIChanges(originalData, originalHeaders, aiData, aiHeaders, rowIndices, colIndices, prompt) {
+    // Start with a copy of original data
+    const newData = originalData.map(row => [...row]);
+    const newHeaders = [...originalHeaders];
+    
+    // Update headers if columns were modified
+    if (aiHeaders && colIndices) {
+        colIndices.forEach((origColIdx, aiColIdx) => {
+            if (aiHeaders[aiColIdx] !== undefined && origColIdx < newHeaders.length) {
+                newHeaders[origColIdx] = aiHeaders[aiColIdx];
+            }
+        });
+    }
+    
+    // Map AI data back to original positions
+    if (aiData && rowIndices && colIndices) {
+        aiData.forEach((aiRow, aiRowIdx) => {
+            const origRowIdx = rowIndices[aiRowIdx];
+            if (origRowIdx !== undefined && origRowIdx < newData.length) {
+                aiRow.forEach((cellValue, aiColIdx) => {
+                    const origColIdx = colIndices[aiColIdx];
+                    if (origColIdx !== undefined && origColIdx < newHeaders.length) {
+                        newData[origRowIdx][origColIdx] = cellValue;
+                    }
+                });
+            }
+        });
+    }
+    
+    // Handle case where AI returned more rows (additions)
+    if (aiData && aiData.length > rowIndices.length) {
+        // AI added new rows - append them
+        for (let i = rowIndices.length; i < aiData.length; i++) {
+            const newRow = new Array(newHeaders.length).fill('');
+            aiData[i].forEach((cellValue, aiColIdx) => {
+                const origColIdx = colIndices[aiColIdx];
+                if (origColIdx !== undefined) {
+                    newRow[origColIdx] = cellValue;
+                }
+            });
+            newData.push(newRow);
+        }
+    }
+    
+    // Check if user asked to delete rows
+    const askedToDelete = userAskedToDeleteRows(prompt);
+    let message = null;
+    
+    // If AI returned fewer rows and user didn't ask to delete, we've preserved everything
+    if (aiData && aiData.length < rowIndices.length && !askedToDelete) {
+        message = `✓ Modified ${aiData.length} rows. All other rows preserved.`;
+    }
+    
+    return {
+        data: newData,
+        headers: newHeaders,
+        message: message
+    };
+}
+
+// Prepare data for AI - SMART extraction based on user's request
+function prepareDataForAI(data, hdrs, prompt) {
+    // Parse the prompt to identify which rows/columns the user is referring to
+    const extraction = extractReferencedData(data, hdrs, prompt);
+    
+    return {
+        dataToSend: extraction.data,
+        headersToSend: extraction.headers,
+        rowIndices: extraction.rowIndices,
+        colIndices: extraction.colIndices,
+        isPartialData: extraction.isPartial,
+        context: extraction.context
+    };
+}
+
+// Smart extraction: parse user's request to find referenced rows and columns
+function extractReferencedData(data, hdrs, prompt) {
+    const lowerPrompt = prompt.toLowerCase();
+    
+    // Find referenced columns
+    const referencedCols = findReferencedColumns(hdrs, lowerPrompt);
+    
+    // Find referenced rows
+    const referencedRows = findReferencedRows(data, hdrs, lowerPrompt);
+    
+    // If no specific references found, check if data is small enough to send all
+    const fullDataSize = JSON.stringify(data).length;
+    const MAX_FULL_SIZE = 50000; // ~50KB limit for full data
+    
+    if (referencedCols.length === 0 && referencedRows.length === 0) {
+        // No specific references - send all if small, otherwise send with context
+        if (fullDataSize <= MAX_FULL_SIZE) {
+            return {
+                data: data,
+                headers: hdrs,
+                rowIndices: data.map((_, i) => i),
+                colIndices: hdrs.map((_, i) => i),
+                isPartial: false,
+                context: null
+            };
+        } else {
+            // Too large - send first 200 rows with warning
+            const maxRows = 200;
+            return {
+                data: data.slice(0, maxRows),
+                headers: hdrs,
+                rowIndices: Array.from({length: Math.min(maxRows, data.length)}, (_, i) => i),
+                colIndices: hdrs.map((_, i) => i),
+                isPartial: true,
+                context: `Dataset has ${data.length} rows total. Showing first ${maxRows}. Apply changes to ALL rows.`
+            };
+        }
+    }
+    
+    // We have specific references - extract only what's needed
+    const colIndices = referencedCols.length > 0 ? referencedCols : hdrs.map((_, i) => i);
+    const rowIndices = referencedRows.length > 0 ? referencedRows : data.map((_, i) => i);
+    
+    // Limit rows if still too many
+    const MAX_ROWS = 500;
+    const finalRowIndices = rowIndices.length > MAX_ROWS ? rowIndices.slice(0, MAX_ROWS) : rowIndices;
+    
+    // Extract the subset
+    const extractedHeaders = colIndices.map(i => hdrs[i]);
+    const extractedData = finalRowIndices.map(rowIdx => 
+        colIndices.map(colIdx => data[rowIdx]?.[colIdx] ?? '')
+    );
+    
+    // Build context message
+    let context = null;
+    if (referencedRows.length > 0 || referencedCols.length > 0) {
+        const parts = [];
+        if (referencedCols.length > 0 && referencedCols.length < hdrs.length) {
+            parts.push(`Working with columns: ${extractedHeaders.join(', ')}`);
+        }
+        if (referencedRows.length > 0 && referencedRows.length < data.length) {
+            parts.push(`Working with ${finalRowIndices.length} specific rows (indices: ${finalRowIndices.slice(0, 10).map(i => i+1).join(', ')}${finalRowIndices.length > 10 ? '...' : ''})`);
+        }
+        if (rowIndices.length > MAX_ROWS) {
+            parts.push(`Note: Limited to first ${MAX_ROWS} matching rows out of ${rowIndices.length}`);
+        }
+        context = parts.join('. ');
+    }
+    
+    return {
+        data: extractedData,
+        headers: extractedHeaders,
+        rowIndices: finalRowIndices,
+        colIndices: colIndices,
+        isPartial: referencedCols.length > 0 || referencedRows.length > 0,
+        context: context
+    };
+}
+
+// Find columns mentioned in the prompt
+function findReferencedColumns(hdrs, prompt) {
+    const referenced = new Set();
+    
+    // Check for exact column name matches (case insensitive)
+    hdrs.forEach((header, idx) => {
+        if (header && prompt.includes(header.toLowerCase())) {
+            referenced.add(idx);
+        }
+    });
+    
+    // Check for column letter references (A, B, C, etc.)
+    const colLetterMatch = prompt.match(/\bcolumn\s*([a-z])\b/gi);
+    if (colLetterMatch) {
+        colLetterMatch.forEach(match => {
+            const letter = match.replace(/column\s*/i, '').toUpperCase();
+            const idx = letter.charCodeAt(0) - 65; // A=0, B=1, etc.
+            if (idx >= 0 && idx < hdrs.length) {
+                referenced.add(idx);
+            }
+        });
+    }
+    
+    // Check for "columns X and Y" or "columns X, Y, Z"
+    const multiColMatch = prompt.match(/columns?\s+([a-z,\s]+(?:and\s+[a-z])?)/gi);
+    if (multiColMatch) {
+        multiColMatch.forEach(match => {
+            const letters = match.match(/[a-z](?=\s|,|$|and)/gi);
+            if (letters) {
+                letters.forEach(letter => {
+                    const idx = letter.toUpperCase().charCodeAt(0) - 65;
+                    if (idx >= 0 && idx < hdrs.length) {
+                        referenced.add(idx);
+                    }
+                });
+            }
+        });
+    }
+    
+    return Array.from(referenced).sort((a, b) => a - b);
+}
+
+// Find rows mentioned in the prompt
+function findReferencedRows(data, hdrs, prompt) {
+    const referenced = new Set();
+    
+    // Check for specific row numbers: "row 5", "rows 1-10", "rows 1, 2, 3"
+    const rowNumMatch = prompt.match(/rows?\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+)*)/gi);
+    if (rowNumMatch) {
+        rowNumMatch.forEach(match => {
+            const nums = match.replace(/rows?\s*/i, '');
+            
+            // Handle ranges like "1-10" or "1–10"
+            const rangeMatch = nums.match(/(\d+)\s*[-–]\s*(\d+)/);
+            if (rangeMatch) {
+                const start = parseInt(rangeMatch[1]) - 1; // Convert to 0-indexed
+                const end = parseInt(rangeMatch[2]) - 1;
+                for (let i = Math.max(0, start); i <= Math.min(end, data.length - 1); i++) {
+                    referenced.add(i);
+                }
+            } else {
+                // Handle comma-separated: "1, 2, 3"
+                const numbers = nums.match(/\d+/g);
+                if (numbers) {
+                    numbers.forEach(n => {
+                        const idx = parseInt(n) - 1; // Convert to 0-indexed
+                        if (idx >= 0 && idx < data.length) {
+                            referenced.add(idx);
+                        }
+                    });
+                }
+            }
+        });
+    }
+    
+    // Check for "first X rows", "last X rows"
+    const firstMatch = prompt.match(/first\s*(\d+)\s*rows?/i);
+    if (firstMatch) {
+        const count = parseInt(firstMatch[1]);
+        for (let i = 0; i < Math.min(count, data.length); i++) {
+            referenced.add(i);
+        }
+    }
+    
+    const lastMatch = prompt.match(/last\s*(\d+)\s*rows?/i);
+    if (lastMatch) {
+        const count = parseInt(lastMatch[1]);
+        for (let i = Math.max(0, data.length - count); i < data.length; i++) {
+            referenced.add(i);
+        }
+    }
+    
+    // Check for "where column = value" style filters
+    const whereMatch = prompt.match(/where\s+(\w+)\s*(=|is|equals?|contains?|>|<|>=|<=)\s*["']?([^"'\s]+)["']?/gi);
+    if (whereMatch) {
+        whereMatch.forEach(match => {
+            const parts = match.match(/where\s+(\w+)\s*(=|is|equals?|contains?|>|<|>=|<=)\s*["']?([^"'\s]+)["']?/i);
+            if (parts) {
+                const colName = parts[1].toLowerCase();
+                const operator = parts[2].toLowerCase();
+                const value = parts[3];
+                
+                // Find column index
+                const colIdx = hdrs.findIndex(h => h && h.toLowerCase() === colName);
+                if (colIdx !== -1) {
+                    data.forEach((row, rowIdx) => {
+                        const cellValue = String(row[colIdx] ?? '').toLowerCase();
+                        const compareValue = value.toLowerCase();
+                        
+                        let matches = false;
+                        if (operator === '=' || operator === 'is' || operator.startsWith('equal')) {
+                            matches = cellValue === compareValue;
+                        } else if (operator.startsWith('contain')) {
+                            matches = cellValue.includes(compareValue);
+                        } else if (operator === '>') {
+                            matches = parseFloat(cellValue) > parseFloat(compareValue);
+                        } else if (operator === '<') {
+                            matches = parseFloat(cellValue) < parseFloat(compareValue);
+                        } else if (operator === '>=') {
+                            matches = parseFloat(cellValue) >= parseFloat(compareValue);
+                        } else if (operator === '<=') {
+                            matches = parseFloat(cellValue) <= parseFloat(compareValue);
+                        }
+                        
+                        if (matches) {
+                            referenced.add(rowIdx);
+                        }
+                    });
+                }
+            }
+        });
+    }
+    
+    // Check for value-based references like "rows with X" or "rows containing X"
+    const containingMatch = prompt.match(/rows?\s+(?:with|containing|that\s+have|where)\s+["']?([^"']+)["']?/gi);
+    if (containingMatch && referenced.size === 0) {
+        containingMatch.forEach(match => {
+            const valueMatch = match.match(/["']([^"']+)["']|(\S+)$/);
+            if (valueMatch) {
+                const searchValue = (valueMatch[1] || valueMatch[2]).toLowerCase();
+                data.forEach((row, rowIdx) => {
+                    if (row.some(cell => String(cell).toLowerCase().includes(searchValue))) {
+                        referenced.add(rowIdx);
+                    }
+                });
+            }
+        });
+    }
+    
+    return Array.from(referenced).sort((a, b) => a - b);
+}
+
+// Apply modification rules from AI to full dataset
+function applyModificationRules(rules, description) {
+    const oldHeaders = [...headers];
+    const oldData = workbookData.map(row => [...row]);
+    
+    saveState();
+    
+    rules.forEach(rule => {
+        const colIndex = typeof rule.column === 'number' 
+            ? rule.column 
+            : headers.findIndex(h => h.toLowerCase() === rule.column.toLowerCase());
+        
+        if (colIndex === -1) return;
+        
+        workbookData.forEach((row, rowIndex) => {
+            const oldValue = row[colIndex];
+            let newValue = oldValue;
+            
+            // Check condition if present
+            if (rule.condition) {
+                try {
+                    const conditionFn = new Function('old_value', 'row', 'headers', `return ${rule.condition}`);
+                    if (!conditionFn(oldValue, row, headers)) return;
+                } catch (e) {
+                    console.warn('Condition evaluation failed:', e);
+                }
+            }
+            
+            switch (rule.action) {
+                case 'multiply':
+                    const num = parseFloat(oldValue);
+                    if (!isNaN(num)) {
+                        newValue = String(num * parseFloat(rule.value));
+                    }
+                    break;
+                case 'add':
+                    const num2 = parseFloat(oldValue);
+                    if (!isNaN(num2)) {
+                        newValue = String(num2 + parseFloat(rule.value));
+                    }
+                    break;
+                case 'replace':
+                    newValue = rule.value;
+                    break;
+                case 'formula':
+                    try {
+                        const formulaFn = new Function('row', 'headers', 
+                            `const ${headers.map((h, i) => `${h.replace(/[^a-zA-Z0-9_]/g, '_')} = parseFloat(row[${i}]) || 0`).join('; ')}; return ${rule.value}`);
+                        newValue = String(formulaFn(row, headers));
+                    } catch (e) {
+                        console.warn('Formula evaluation failed:', e);
+                    }
+                    break;
+            }
+            
+            row[colIndex] = newValue;
+        });
+    });
+    
+    const { changes, modified } = detectChanges(oldHeaders, oldData, headers, workbookData);
+    modifiedCells = modified;
+    
+    lastAIChange = {
+        before: { headers: oldHeaders, data: oldData },
+        after: { headers: headers, data: workbookData }
+    };
+    
+    saveAIState(description || 'Applied modification rules', 'Bulk modification');
+    
+    renderTable();
+    addChatMessage('ai', `✓ ${description || 'Applied changes to all ' + workbookData.length + ' rows'}`);
+}
+
+// Apply partial changes from sample to full dataset
+function applyPartialChangesToFullData(fullData, partialData, oldHeaders, newHeaders) {
+    // Detect the pattern of changes from partial data
+    const changes = [];
+    const minRows = Math.min(fullData.length, partialData.length);
+    
+    for (let r = 0; r < minRows; r++) {
+        for (let c = 0; c < Math.min(oldHeaders.length, newHeaders.length); c++) {
+            const oldVal = String(fullData[r][c] ?? '');
+            const newVal = String(partialData[r][c] ?? '');
+            
+            if (oldVal !== newVal) {
+                changes.push({
+                    row: r,
+                    col: c,
+                    oldVal,
+                    newVal,
+                    // Try to detect pattern
+                    isMultiplication: !isNaN(parseFloat(oldVal)) && !isNaN(parseFloat(newVal)) && parseFloat(oldVal) !== 0
+                        ? parseFloat(newVal) / parseFloat(oldVal) : null,
+                    isAddition: !isNaN(parseFloat(oldVal)) && !isNaN(parseFloat(newVal))
+                        ? parseFloat(newVal) - parseFloat(oldVal) : null
+                });
+            }
+        }
+    }
+    
+    // If changes follow a pattern, apply to all rows
+    const colPatterns = {};
+    changes.forEach(ch => {
+        if (!colPatterns[ch.col]) colPatterns[ch.col] = [];
+        colPatterns[ch.col].push(ch);
+    });
+    
+    const result = fullData.map(row => [...row]);
+    
+    Object.entries(colPatterns).forEach(([col, colChanges]) => {
+        const colIdx = parseInt(col);
+        
+        // Check for consistent multiplication pattern
+        const multipliers = colChanges.map(c => c.isMultiplication).filter(m => m !== null);
+        if (multipliers.length > 0) {
+            const avgMultiplier = multipliers.reduce((a, b) => a + b, 0) / multipliers.length;
+            const isConsistent = multipliers.every(m => Math.abs(m - avgMultiplier) < 0.001);
+            
+            if (isConsistent) {
+                result.forEach((row, idx) => {
+                    const val = parseFloat(row[colIdx]);
+                    if (!isNaN(val)) {
+                        row[colIdx] = String(val * avgMultiplier);
+                    }
+                });
+                return;
+            }
+        }
+        
+        // Check for consistent addition pattern
+        const additions = colChanges.map(c => c.isAddition).filter(a => a !== null);
+        if (additions.length > 0) {
+            const avgAddition = additions.reduce((a, b) => a + b, 0) / additions.length;
+            const isConsistent = additions.every(a => Math.abs(a - avgAddition) < 0.001);
+            
+            if (isConsistent) {
+                result.forEach((row, idx) => {
+                    const val = parseFloat(row[colIdx]);
+                    if (!isNaN(val)) {
+                        row[colIdx] = String(val + avgAddition);
+                    }
+                });
+                return;
+            }
+        }
+        
+        // For non-numeric changes, apply directly if within partial data range
+        colChanges.forEach(ch => {
+            if (ch.row < result.length) {
+                result[ch.row][colIdx] = ch.newVal;
+            }
+        });
+    });
+    
+    return result;
+}
 
 // Standard undo
 undoBtn.addEventListener('click', () => {
