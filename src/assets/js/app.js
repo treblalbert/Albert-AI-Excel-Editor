@@ -2,8 +2,7 @@ let apiKey = '';
 let apiKeyPath = '';
 let workbookData = [];
 let headers = [];
-let history = []; // General history for manual edits
-let aiHistory = []; // Separate AI change history for granular undo
+let history = [];
 let columnWidths = {};
 let activeFilters = {};
 let cellColors = {};
@@ -12,15 +11,19 @@ let modifiedCells = new Set();
 let highlightEnabled = false;
 let lastAIChange = null;
 
-// Cell selection state
-let selectedCells = new Set();
+// Processing control
+let isProcessing = false;
+let shouldStopProcessing = false;
+let preProcessingState = null;
+
+// Selection state - simple bounds-based
 let selectionStart = null;
 let selectionEnd = null;
 let isSelecting = false;
-let isDraggingFillHandle = false;
-let fillHandleStart = null;
-let clipboard = null;
-let preSelectionState = null; // For ESC cancellation
+let isDraggingFill = false;
+let fillEnd = null;
+let editingCell = null;
+let clipboard = [];
 
 // DOM Elements
 const apiSetup = document.getElementById('apiSetup');
@@ -30,11 +33,12 @@ const excelFile = document.getElementById('excelFile');
 const aiPrompt = document.getElementById('aiPrompt');
 const aiButton = document.getElementById('aiButton');
 const undoBtn = document.getElementById('undoBtn');
+const stopBtn = document.getElementById('stopBtn');
 const addRowBtn = document.getElementById('addRowBtn');
 const addColBtn = document.getElementById('addColBtn');
 const compareBtn = document.getElementById('compareBtn');
 const downloadBtn = document.getElementById('downloadBtn');
-const exportFormatSelect = document.getElementById('exportFormat');
+const exportFormat = document.getElementById('exportFormat');
 const statusDiv = document.getElementById('status');
 const tableHead = document.getElementById('tableHead');
 const tableBody = document.getElementById('tableBody');
@@ -42,2638 +46,1316 @@ const chatMessages = document.getElementById('chatMessages');
 const highlightToggle = document.getElementById('highlightToggle');
 const compareModal = document.getElementById('compareModal');
 const closeCompareModal = document.getElementById('closeCompareModal');
-const aiHistoryModal = document.getElementById('aiHistoryModal');
-const closeAiHistoryModal = document.getElementById('closeAiHistoryModal');
-const aiHistoryBtn = document.getElementById('aiHistoryBtn');
-const aiHistoryList = document.getElementById('aiHistoryList');
+const themeToggle = document.getElementById('themeToggle');
 
-// Load saved preferences on startup
+// Theme
+function initTheme() {
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    updateThemeIcon(savedTheme);
+}
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+    updateThemeIcon(next);
+}
+
+function updateThemeIcon(theme) {
+    const icon = document.getElementById('themeIcon');
+    const text = document.getElementById('themeText');
+    if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
+    if (text) text.textContent = theme === 'dark' ? t('lightModeLabel') : t('darkModeLabel');
+}
+
+// Init
 window.addEventListener('load', () => {
-    const savedPath = localStorage.getItem('apiKeyPath');
+    initTheme();
     const savedHighlight = localStorage.getItem('highlightEnabled');
-    
-    if (savedHighlight === 'true') {
-        highlightToggle.checked = true;
-        highlightEnabled = true;
-    }
-    
+    const savedFormat = localStorage.getItem('exportFormat');
+    if (savedHighlight === 'true') { highlightToggle.checked = true; highlightEnabled = true; }
+    if (savedFormat && exportFormat) exportFormat.value = savedFormat;
+    const savedPath = localStorage.getItem('apiKeyPath');
     if (savedPath) {
         addChatMessage('system', t('attemptingLoad'));
         addChatMessage('system', t('previouslyUsed', { path: savedPath }));
     }
 });
 
-// Highlight toggle handler
+if (themeToggle) themeToggle.addEventListener('click', toggleTheme);
 highlightToggle.addEventListener('change', (e) => {
     highlightEnabled = e.target.checked;
     localStorage.setItem('highlightEnabled', highlightEnabled);
     renderTable();
 });
+if (exportFormat) exportFormat.addEventListener('change', (e) => localStorage.setItem('exportFormat', e.target.value));
 
-function showStatus(message, type = 'info') {
+function showStatus(msg, type = 'info') {
     statusDiv.className = `status ${type}`;
-    statusDiv.textContent = message;
+    statusDiv.textContent = msg;
     statusDiv.style.display = 'block';
     setTimeout(() => statusDiv.style.display = 'none', 5000);
 }
 
 function addChatMessage(type, content) {
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `message ${type}`;
-    msgDiv.textContent = content;
-    chatMessages.appendChild(msgDiv);
+    const div = document.createElement('div');
+    div.className = `message ${type}`;
+    div.textContent = content;
+    chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+function showToast(text) {
+    let toast = document.querySelector('.toast-indicator');
+    if (!toast) { toast = document.createElement('div'); toast.className = 'toast-indicator'; document.body.appendChild(toast); }
+    toast.textContent = text; toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 1500);
+}
+
+// File handling
 apiKeyFile.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
-    const text = await file.text();
-    apiKey = text.trim();
+    apiKey = (await file.text()).trim();
     apiKeyPath = file.name;
-    
     localStorage.setItem('apiKeyPath', file.name);
-    
     addChatMessage('system', t('apiKeyLoaded'));
     apiSetup.classList.add('hidden');
     mainApp.classList.remove('hidden');
     updateButtonStates();
 });
 
-// Enhanced file loading with multiple format support
 excelFile.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     try {
         originalFileName = file.name.replace(/\.[^/.]+$/, '');
-        const fileExt = file.name.split('.').pop().toLowerCase();
-        
-        let json;
-        
-        if (fileExt === 'csv') {
-            // Parse CSV with better handling
-            const text = await file.text();
-            json = parseCSV(text);
-        } else if (fileExt === 'tsv' || fileExt === 'txt') {
-            // Parse TSV/Tab-delimited
-            const text = await file.text();
-            json = parseTSV(text);
-        } else if (fileExt === 'json') {
-            // Parse JSON data
-            const text = await file.text();
-            json = parseJSON(text);
-        } else if (fileExt === 'xml') {
-            // Parse XML data
-            const text = await file.text();
-            json = parseXML(text);
-        } else if (fileExt === 'ods') {
-            // OpenDocument Spreadsheet
-            const data = await file.arrayBuffer();
-            const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
-            const sheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[sheetName];
-            extractCellColors(worksheet);
-            json = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-        } else {
-            // Excel formats (.xlsx, .xls, .xlsm, .xlsb)
-            const data = await file.arrayBuffer();
-            const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
-            const sheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[sheetName];
-            extractCellColors(worksheet);
-            json = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+        const data = await file.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array', cellStyles: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        cellColors = {};
+        for (let c in ws) {
+            if (c[0] !== '!' && ws[c].s && ws[c].s.fgColor) cellColors[c] = '#' + ws[c].s.fgColor.rgb;
         }
-
-        if (!json || json.length === 0) {
-            showStatus(t('errorEmpty'), 'error');
-            return;
-        }
-
-        headers = json[0].map(h => h !== undefined && h !== null ? String(h) : '');
-        workbookData = json.slice(1).map(row => 
-            row.map(cell => cell !== undefined && cell !== null ? cell : '')
-        );
-        
-        // Ensure all rows have same number of columns as headers
-        workbookData = workbookData.map(row => {
-            while (row.length < headers.length) row.push('');
-            return row.slice(0, headers.length);
-        });
-        
-        history = [];
-        aiHistory = [];
-        activeFilters = {};
-        modifiedCells.clear();
-        lastAIChange = null;
-        selectedCells.clear();
-        
+        const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        if (!json.length) { showStatus(t('errorEmpty'), 'error'); return; }
+        headers = json[0].map(h => h != null ? String(h) : '');
+        workbookData = json.slice(1).map(r => r.map(c => c != null ? c : ''));
+        history = []; activeFilters = {}; modifiedCells.clear(); lastAIChange = null;
+        selectionStart = selectionEnd = editingCell = null;
         renderTable();
-        addChatMessage('system', t('fileLoaded', { 
-            rows: workbookData.length, 
-            cols: headers.length,
-            filename: file.name 
-        }));
+        addChatMessage('system', t('fileLoaded', { rows: workbookData.length, cols: headers.length, filename: file.name }));
         updateButtonStates();
-    } catch (error) {
-        showStatus(t('errorLoading', { error: error.message }), 'error');
-        addChatMessage('system', t('apiError', { error: error.message }));
+    } catch (err) {
+        showStatus(t('errorLoading', { error: err.message }), 'error');
+        addChatMessage('system', t('apiError', { error: err.message }));
     }
 });
 
-// Extract cell colors from worksheet
-function extractCellColors(worksheet) {
-    cellColors = {};
-    for (let cell in worksheet) {
-        if (cell[0] === '!') continue;
-        if (worksheet[cell].s && worksheet[cell].s.fgColor) {
-            cellColors[cell] = '#' + worksheet[cell].s.fgColor.rgb;
-        }
-    }
-}
-
-// CSV Parser with quote handling
-function parseCSV(text) {
-    const lines = [];
-    let currentLine = [];
-    let currentCell = '';
-    let inQuotes = false;
-    
-    for (let i = 0; i < text.length; i++) {
-        const char = text[i];
-        const nextChar = text[i + 1];
-        
-        if (inQuotes) {
-            if (char === '"' && nextChar === '"') {
-                currentCell += '"';
-                i++;
-            } else if (char === '"') {
-                inQuotes = false;
-            } else {
-                currentCell += char;
-            }
-        } else {
-            if (char === '"') {
-                inQuotes = true;
-            } else if (char === ',') {
-                currentLine.push(currentCell);
-                currentCell = '';
-            } else if (char === '\n' || (char === '\r' && nextChar === '\n')) {
-                currentLine.push(currentCell);
-                lines.push(currentLine);
-                currentLine = [];
-                currentCell = '';
-                if (char === '\r') i++;
-            } else if (char !== '\r') {
-                currentCell += char;
-            }
-        }
-    }
-    
-    if (currentCell || currentLine.length > 0) {
-        currentLine.push(currentCell);
-        lines.push(currentLine);
-    }
-    
-    return lines.filter(line => line.some(cell => cell !== ''));
-}
-
-// TSV Parser
-function parseTSV(text) {
-    const lines = text.split(/\r?\n/).filter(line => line.trim());
-    return lines.map(line => line.split('\t'));
-}
-
-// JSON Parser - handles arrays of objects or arrays
-function parseJSON(text) {
-    const data = JSON.parse(text);
-    
-    if (Array.isArray(data)) {
-        if (data.length === 0) return [];
-        
-        if (typeof data[0] === 'object' && !Array.isArray(data[0])) {
-            // Array of objects
-            const headers = Object.keys(data[0]);
-            const rows = data.map(obj => headers.map(h => obj[h] ?? ''));
-            return [headers, ...rows];
-        } else if (Array.isArray(data[0])) {
-            // Array of arrays
-            return data;
-        }
-    } else if (typeof data === 'object') {
-        // Single object or nested structure
-        const headers = Object.keys(data);
-        const values = headers.map(h => data[h]);
-        return [headers, values];
-    }
-    
-    throw new Error('Unsupported JSON structure');
-}
-
-// XML Parser - basic table/row/cell structure
-function parseXML(text) {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(text, 'text/xml');
-    
-    // Try common XML table structures
-    const rows = doc.querySelectorAll('row, tr, record, item');
-    if (rows.length === 0) {
-        // Try to parse as a flat structure
-        const root = doc.documentElement;
-        const children = root.children;
-        if (children.length > 0) {
-            const firstChild = children[0];
-            const headers = Array.from(firstChild.children).map(el => el.tagName);
-            const data = Array.from(children).map(row => 
-                Array.from(row.children).map(cell => cell.textContent)
-            );
-            return [headers, ...data];
-        }
-    }
-    
-    const result = [];
-    let headers = null;
-    
-    rows.forEach((row, idx) => {
-        const cells = row.querySelectorAll('cell, td, th, field, *');
-        const rowData = Array.from(cells).map(cell => cell.textContent);
-        
-        if (idx === 0) {
-            // Check if first row looks like headers
-            const headerCells = row.querySelectorAll('th, header');
-            if (headerCells.length > 0 || row.tagName.toLowerCase() === 'header') {
-                headers = rowData;
-            } else {
-                // Generate headers
-                headers = rowData.map((_, i) => `Column ${i + 1}`);
-                result.push(headers);
-            }
-            result.push(headers === rowData ? rowData : rowData);
-        } else {
-            result.push(rowData);
-        }
-    });
-    
-    return result;
-}
-
-function saveState() {
-    history.push({
-        headers: JSON.parse(JSON.stringify(headers)),
-        data: JSON.parse(JSON.stringify(workbookData)),
-        colors: JSON.parse(JSON.stringify(cellColors)),
-        modifiedCells: new Set(modifiedCells)
+function saveState(actionType = 'general') {
+    history.push({ 
+        headers: JSON.parse(JSON.stringify(headers)), 
+        data: JSON.parse(JSON.stringify(workbookData)), 
+        colors: JSON.parse(JSON.stringify(cellColors)), 
+        modifiedCells: new Set(modifiedCells),
+        actionType: actionType
     });
     if (history.length > 50) history.shift();
     updateButtonStates();
 }
 
-// Save AI-specific state for granular undo
-function saveAIState(description, prompt) {
-    aiHistory.push({
-        id: Date.now(),
-        timestamp: new Date().toLocaleString(),
-        description: description,
-        prompt: prompt,
-        beforeHeaders: JSON.parse(JSON.stringify(history[history.length - 1]?.headers || headers)),
-        beforeData: JSON.parse(JSON.stringify(history[history.length - 1]?.data || workbookData)),
-        afterHeaders: JSON.parse(JSON.stringify(headers)),
-        afterData: JSON.parse(JSON.stringify(workbookData)),
-        modifiedCells: new Set(modifiedCells),
-        isReverted: false
-    });
-    if (aiHistory.length > 100) aiHistory.shift();
-    updateButtonStates();
+function getSelectionBounds() {
+    if (!selectionStart) return null;
+    const e = selectionEnd || selectionStart;
+    return { r1: Math.min(selectionStart.row, e.row), r2: Math.max(selectionStart.row, e.row), c1: Math.min(selectionStart.col, e.col), c2: Math.max(selectionStart.col, e.col) };
 }
-
 function renderTable() {
-    tableHead.innerHTML = '';
-    tableBody.innerHTML = '';
-
-    const headerRow = document.createElement('tr');
-    const cornerCell = document.createElement('th');
-    cornerCell.className = 'row-header';
-    cornerCell.textContent = '#';
-    headerRow.appendChild(cornerCell);
-
-    headers.forEach((header, i) => {
+    tableHead.innerHTML = ''; tableBody.innerHTML = '';
+    const hr = document.createElement('tr');
+    const corner = document.createElement('th'); corner.className = 'row-header'; corner.textContent = '#'; hr.appendChild(corner);
+    headers.forEach((h, i) => {
         const th = document.createElement('th');
-        th.style.width = columnWidths[i] || '150px';
-        th.style.position = 'relative';
-        
-        const headerContent = document.createElement('div');
-        headerContent.className = 'header-content';
-        
-        const headerText = document.createElement('span');
-        headerText.className = 'header-text';
-        headerText.textContent = header || `Column ${i + 1}`;
-        headerContent.appendChild(headerText);
-        
-        const filterIcon = document.createElement('span');
-        filterIcon.className = 'filter-icon' + (activeFilters[i] && activeFilters[i].size > 0 ? ' active' : '');
-        filterIcon.textContent = '▼';
-        filterIcon.onclick = (e) => {
-            e.stopPropagation();
-            showFilterDropdown(e, i);
-        };
-        headerContent.appendChild(filterIcon);
-        
-        th.appendChild(headerContent);
-
-        const resizeHandle = document.createElement('div');
-        resizeHandle.className = 'resize-handle';
-        resizeHandle.addEventListener('mousedown', (e) => startResize(e, i, th));
-        th.appendChild(resizeHandle);
-
-        headerRow.appendChild(th);
+        th.style.width = columnWidths[i] || '120px';
+        const hc = document.createElement('div'); hc.className = 'header-content';
+        const ht = document.createElement('span'); ht.className = 'header-text'; ht.textContent = h || `Col ${i+1}`; hc.appendChild(ht);
+        const fi = document.createElement('span'); fi.className = 'filter-icon' + (hasActiveFilter(i) ? ' active' : ''); fi.textContent = '▼';
+        fi.onclick = (e) => { e.stopPropagation(); showFilterDropdown(e, i); }; hc.appendChild(fi);
+        th.appendChild(hc);
+        const rh = document.createElement('div'); rh.className = 'resize-handle';
+        rh.addEventListener('mousedown', (e) => startResize(e, i, th)); th.appendChild(rh);
+        hr.appendChild(th);
     });
-    tableHead.appendChild(headerRow);
+    tableHead.appendChild(hr);
 
-    const filteredData = applyFilters();
-    filteredData.forEach((row) => {
+    const bounds = getSelectionBounds();
+    applyFilters().forEach((row) => {
         const tr = document.createElement('tr');
-        
-        const rowHeader = document.createElement('td');
-        rowHeader.className = 'row-header';
-        rowHeader.textContent = row.originalIndex + 1;
-        tr.appendChild(rowHeader);
-
-        headers.forEach((_, colIndex) => {
+        const rh = document.createElement('td'); rh.className = 'row-header'; rh.textContent = row.originalIndex + 1; tr.appendChild(rh);
+        headers.forEach((_, ci) => {
+            const ri = row.originalIndex;
             const td = document.createElement('td');
-            const cellRef = XLSX.utils.encode_cell({r: row.originalIndex + 1, c: colIndex});
+            td.dataset.row = ri; td.dataset.col = ci;
+            const cellRef = XLSX.utils.encode_cell({r: ri + 1, c: ci});
+            if (cellColors[cellRef]) td.style.backgroundColor = cellColors[cellRef];
+            if (highlightEnabled && modifiedCells.has(`${ri}-${ci}`)) td.classList.add('ai-modified');
+            if (bounds && ri >= bounds.r1 && ri <= bounds.r2 && ci >= bounds.c1 && ci <= bounds.c2) td.classList.add('selected');
             
-            // Apply original cell color if exists
-            if (cellColors[cellRef]) {
-                td.style.backgroundColor = cellColors[cellRef];
+            if (editingCell?.row === ri && editingCell?.col === ci) {
+                const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'cell-input';
+                inp.value = row.data[ci] ?? '';
+                inp.addEventListener('blur', () => finishEditing(ri, ci, inp.value));
+                inp.addEventListener('keydown', (e) => handleEditKey(e, ri, ci, inp));
+                td.appendChild(inp);
+                setTimeout(() => { inp.focus(); inp.select(); }, 0);
+            } else {
+                const d = document.createElement('div'); d.className = 'cell-display'; d.textContent = row.data[ci] ?? ''; td.appendChild(d);
             }
-            
-            // Apply AI modification highlight if enabled
-            const cellKey = `${row.originalIndex}-${colIndex}`;
-            if (highlightEnabled && modifiedCells.has(cellKey)) {
-                td.classList.add('ai-modified');
+            if (bounds && ri === bounds.r2 && ci === bounds.c2 && !editingCell) {
+                const fh = document.createElement('div'); fh.className = 'fill-handle'; td.appendChild(fh);
             }
-            
-            // Apply selection highlight
-            if (selectedCells.has(cellKey)) {
-                td.classList.add('selected');
-            }
-
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.value = row.data[colIndex] !== undefined ? row.data[colIndex] : '';
-            input.dataset.row = row.originalIndex;
-            input.dataset.col = colIndex;
-            input.readOnly = true; // Start as read-only, double-click to edit
-            
-            // Cell events
-            input.addEventListener('change', (e) => {
-                saveState();
-                workbookData[row.originalIndex][colIndex] = e.target.value;
-            });
-            
-            input.addEventListener('mousedown', (e) => handleCellMouseDown(e, row.originalIndex, colIndex));
-            input.addEventListener('mouseenter', (e) => handleCellMouseEnter(e, row.originalIndex, colIndex));
-            
-            // Double-click to enter edit mode
-            input.addEventListener('dblclick', (e) => {
-                e.stopPropagation();
-                enterEditMode(input);
-            });
-            
-            // Handle keyboard navigation and editing
-            input.addEventListener('keydown', (e) => handleCellKeyDown(e, input, row.originalIndex, colIndex));
-            
-            // Exit edit mode on blur
-            input.addEventListener('blur', () => {
-                input.readOnly = true;
-                input.classList.remove('editing');
-            });
-            
-            td.appendChild(input);
-            
-            // Add fill handle to last selected cell
-            if (selectedCells.size > 0 && isLastSelectedCell(row.originalIndex, colIndex)) {
-                const fillHandle = document.createElement('div');
-                fillHandle.className = 'fill-handle';
-                fillHandle.addEventListener('mousedown', (e) => startFillHandle(e, row.originalIndex, colIndex));
-                td.appendChild(fillHandle);
-            }
-            
             tr.appendChild(td);
         });
         tableBody.appendChild(tr);
     });
+    tableBody.onmousedown = onTableMouseDown;
+    tableBody.ondblclick = onTableDblClick;
 }
 
-// Check if this is the bottom-right cell of selection
-function isLastSelectedCell(rowIndex, colIndex) {
-    if (selectedCells.size === 0) return false;
-    
-    let maxRow = -1, maxCol = -1;
-    selectedCells.forEach(key => {
-        const [r, c] = key.split('-').map(Number);
-        if (r > maxRow || (r === maxRow && c > maxCol)) {
-            maxRow = r;
-            maxCol = c;
-        }
-    });
-    
-    return rowIndex === maxRow && colIndex === maxCol;
-}
-
-// Cell selection handlers
-
-// Track if we need to re-render (only when selection actually changes)
-let lastClickTime = 0;
-let lastClickCell = null;
-
-function handleCellMouseDown(e, rowIndex, colIndex) {
-    if (e.button !== 0) return; // Left click only
-    
-    const cellKey = `${rowIndex}-${colIndex}`;
-    const now = Date.now();
-    
-    // Detect double-click (within 300ms on same cell)
-    if (lastClickCell === cellKey && (now - lastClickTime) < 300) {
-        // Double-click detected - don't process as selection, let dblclick handler work
-        lastClickTime = 0;
-        lastClickCell = null;
-        return;
-    }
-    
-    lastClickTime = now;
-    lastClickCell = cellKey;
-    
-    // Save current state before starting selection (for ESC cancellation)
-    preSelectionState = {
-        selectedCells: new Set(selectedCells),
-        selectionStart: selectionStart ? { ...selectionStart } : null,
-        selectionEnd: selectionEnd ? { ...selectionEnd } : null
-    };
-    
-    // Check if selection will actually change
-    let selectionChanged = false;
-    
-    if (e.shiftKey && selectionStart) {
-        // Extend selection from existing start point
-        isSelecting = true;
-        extendSelection(rowIndex, colIndex);
-        selectionChanged = true;
-    } else if (e.ctrlKey || e.metaKey) {
-        // Toggle single cell in selection (add/remove from multi-select)
-        if (selectedCells.has(cellKey)) {
-            selectedCells.delete(cellKey);
-        } else {
-            selectedCells.add(cellKey);
-        }
-        isSelecting = false;
-        selectionChanged = true;
-    } else {
-        // Check if we're clicking on an already-selected single cell
-        if (selectedCells.size === 1 && selectedCells.has(cellKey)) {
-            // Same cell - don't re-render, allow double-click to work
-            isSelecting = true; // Still enable drag extension
-            return;
-        }
-        
-        // Start new selection - clear previous and begin fresh
-        isSelecting = true;
-        selectionStart = { row: rowIndex, col: colIndex };
-        selectionEnd = { row: rowIndex, col: colIndex };
-        selectedCells.clear();
-        selectedCells.add(cellKey);
-        selectionChanged = true;
-    }
-    
-    if (selectionChanged) {
-        // Update selection visuals without full re-render
-        updateSelectionVisuals();
-    }
-}
-
-// Lightweight selection visual update without full re-render
-function updateSelectionVisuals() {
-    // Remove old selection classes
-    document.querySelectorAll('td.selected').forEach(td => td.classList.remove('selected'));
-    document.querySelectorAll('.fill-handle').forEach(fh => fh.remove());
-    
-    // Add new selection classes
-    selectedCells.forEach(cellKey => {
-        const [r, c] = cellKey.split('-').map(Number);
-        const input = document.querySelector(`input[data-row="${r}"][data-col="${c}"]`);
-        if (input && input.parentElement) {
-            input.parentElement.classList.add('selected');
-        }
-    });
-    
-    // Add fill handle to the last selected cell
-    if (selectedCells.size > 0) {
-        let maxRow = -1, maxCol = -1;
-        selectedCells.forEach(key => {
-            const [r, c] = key.split('-').map(Number);
-            if (r > maxRow || (r === maxRow && c > maxCol)) {
-                maxRow = r;
-                maxCol = c;
-            }
-        });
-        
-        const lastInput = document.querySelector(`input[data-row="${maxRow}"][data-col="${maxCol}"]`);
-        if (lastInput && lastInput.parentElement) {
-            const fillHandle = document.createElement('div');
-            fillHandle.className = 'fill-handle';
-            fillHandle.addEventListener('mousedown', (e) => startFillHandle(e, maxRow, maxCol));
-            lastInput.parentElement.appendChild(fillHandle);
-        }
-    }
-}
-
-function handleCellMouseEnter(e, rowIndex, colIndex) {
-    if (isDraggingFillHandle) {
-        updateFillPreview(rowIndex, colIndex);
-    } else if (isSelecting && e.buttons === 1) {
-        // Only extend selection if mouse button is still held down
-        extendSelection(rowIndex, colIndex);
-        updateSelectionVisuals();
-    }
-}
-
-function handleCellFocus(rowIndex, colIndex) {
-    // Only update selection on focus if we're not in the middle of a drag selection
-    // and the user just clicked (not dragged) on a single cell
-    if (!isSelecting) {
-        // Don't auto-select on focus - let mousedown handle it
-        // This prevents the re-selection issue
-    }
-}
-
-// Enter edit mode for a cell
-function enterEditMode(input) {
-    input.readOnly = false;
-    input.classList.add('editing');
-    input.focus();
-    input.select(); // Select all text for easy replacement
-}
-
-// Handle keyboard navigation and editing in cells
-function handleCellKeyDown(e, input, rowIndex, colIndex) {
-    const isEditing = !input.readOnly;
-    
-    // F2 to toggle edit mode
-    if (e.key === 'F2') {
-        e.preventDefault();
-        if (isEditing) {
-            input.readOnly = true;
-            input.classList.remove('editing');
-        } else {
-            enterEditMode(input);
-        }
-        return;
-    }
-    
-    // Enter to start editing or confirm and move down
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        if (isEditing) {
-            // Confirm edit and move down
-            input.blur();
-            navigateToCell(rowIndex + 1, colIndex);
-        } else {
-            // Start editing
-            enterEditMode(input);
-        }
-        return;
-    }
-    
-    // Shift+Enter to move up
-    if (e.key === 'Enter' && e.shiftKey) {
-        e.preventDefault();
-        if (isEditing) input.blur();
-        navigateToCell(rowIndex - 1, colIndex);
-        return;
-    }
-    
-    // Tab to move right, Shift+Tab to move left
-    if (e.key === 'Tab') {
-        e.preventDefault();
-        if (isEditing) input.blur();
-        if (e.shiftKey) {
-            navigateToCell(rowIndex, colIndex - 1);
-        } else {
-            navigateToCell(rowIndex, colIndex + 1);
-        }
-        return;
-    }
-    
-    // Arrow keys navigation (only when not editing)
-    if (!isEditing) {
-        if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            navigateToCell(rowIndex - 1, colIndex);
-        } else if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            navigateToCell(rowIndex + 1, colIndex);
-        } else if (e.key === 'ArrowLeft') {
-            e.preventDefault();
-            navigateToCell(rowIndex, colIndex - 1);
-        } else if (e.key === 'ArrowRight') {
-            e.preventDefault();
-            navigateToCell(rowIndex, colIndex + 1);
-        }
-        
-        // Start editing if user types a character
-        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            // Clear cell and start typing
-            input.value = '';
-            enterEditMode(input);
-        }
-    }
-    
-    // Escape to cancel editing
-    if (e.key === 'Escape' && isEditing) {
-        e.preventDefault();
-        e.stopPropagation();
-        // Restore original value
-        input.value = workbookData[rowIndex][colIndex] !== undefined ? workbookData[rowIndex][colIndex] : '';
-        input.readOnly = true;
-        input.classList.remove('editing');
-    }
-}
-
-// Navigate to a specific cell
-function navigateToCell(rowIndex, colIndex) {
-    // Clamp to valid range
-    rowIndex = Math.max(0, Math.min(rowIndex, workbookData.length - 1));
-    colIndex = Math.max(0, Math.min(colIndex, headers.length - 1));
-    
-    const input = document.querySelector(`input[data-row="${rowIndex}"][data-col="${colIndex}"]`);
-    if (input) {
-        // Update selection
-        const cellKey = `${rowIndex}-${colIndex}`;
-        selectedCells.clear();
-        selectedCells.add(cellKey);
-        selectionStart = { row: rowIndex, col: colIndex };
-        selectionEnd = { row: rowIndex, col: colIndex };
-        
-        input.focus();
-        renderTable();
-        
-        // Re-focus after render
-        setTimeout(() => {
-            const newInput = document.querySelector(`input[data-row="${rowIndex}"][data-col="${colIndex}"]`);
-            if (newInput) newInput.focus();
-        }, 0);
-    }
-}
-
-function extendSelection(endRow, endCol) {
-    if (!selectionStart) return;
-    
-    selectionEnd = { row: endRow, col: endCol };
-    selectedCells.clear();
-    
-    const minRow = Math.min(selectionStart.row, endRow);
-    const maxRow = Math.max(selectionStart.row, endRow);
-    const minCol = Math.min(selectionStart.col, endCol);
-    const maxCol = Math.max(selectionStart.col, endCol);
-    
-    for (let r = minRow; r <= maxRow; r++) {
-        for (let c = minCol; c <= maxCol; c++) {
-            selectedCells.add(`${r}-${c}`);
-        }
-    }
-}
-
-// Fill handle functionality (Excel-like drag to fill)
-function startFillHandle(e, rowIndex, colIndex) {
+function onTableMouseDown(e) {
+    const td = e.target.closest('td[data-row]');
+    if (!td) return;
+    const r = +td.dataset.row, c = +td.dataset.col;
+    if (e.target.classList.contains('fill-handle')) { isDraggingFill = true; fillEnd = {row:r,col:c}; document.addEventListener('mousemove', onDocMouseMove); document.addEventListener('mouseup', onDocMouseUp); e.preventDefault(); return; }
+    if (e.target.classList.contains('cell-input')) return;
+    if (editingCell) { const inp = document.querySelector('.cell-input'); if (inp) finishEditing(editingCell.row, editingCell.col, inp.value); }
     e.preventDefault();
-    e.stopPropagation();
-    
-    isDraggingFillHandle = true;
-    fillHandleStart = { row: rowIndex, col: colIndex };
-    
-    document.addEventListener('mousemove', onFillHandleMove);
-    document.addEventListener('mouseup', onFillHandleUp);
+    if (e.shiftKey && selectionStart) { selectionEnd = {row:r,col:c}; } else { selectionStart = {row:r,col:c}; selectionEnd = {row:r,col:c}; }
+    isSelecting = true;
+    updateSelectionVisual();
+    document.addEventListener('mousemove', onDocMouseMove);
+    document.addEventListener('mouseup', onDocMouseUp);
 }
 
-function onFillHandleMove(e) {
-    // Find cell under cursor
-    const element = document.elementFromPoint(e.clientX, e.clientY);
-    if (element && element.tagName === 'INPUT' && element.dataset.row !== undefined) {
-        const row = parseInt(element.dataset.row);
-        const col = parseInt(element.dataset.col);
-        updateFillPreview(row, col);
+function onDocMouseMove(e) {
+    const td = document.elementFromPoint(e.clientX, e.clientY)?.closest('td[data-row]');
+    if (!td) return;
+    const r = +td.dataset.row, c = +td.dataset.col;
+    if (isSelecting) { selectionEnd = {row:r,col:c}; updateSelectionVisual(); }
+    else if (isDraggingFill) { fillEnd = {row:r,col:c}; updateFillPreview(); }
+}
+
+function onDocMouseUp() {
+    document.removeEventListener('mousemove', onDocMouseMove);
+    document.removeEventListener('mouseup', onDocMouseUp);
+    if (isDraggingFill) { performFill(); isDraggingFill = false; clearFillPreview(); }
+    isSelecting = false;
+}
+
+function onTableDblClick(e) {
+    const td = e.target.closest('td[data-row]');
+    if (td) startEditing(+td.dataset.row, +td.dataset.col);
+}
+
+function updateSelectionVisual() {
+    document.querySelectorAll('td.selected').forEach(t => t.classList.remove('selected'));
+    document.querySelectorAll('.fill-handle').forEach(f => f.remove());
+    const b = getSelectionBounds(); if (!b) return;
+    for (let r = b.r1; r <= b.r2; r++) for (let c = b.c1; c <= b.c2; c++) {
+        const td = document.querySelector(`td[data-row="${r}"][data-col="${c}"]`);
+        if (td) td.classList.add('selected');
+    }
+    if (!editingCell) {
+        const last = document.querySelector(`td[data-row="${b.r2}"][data-col="${b.c2}"]`);
+        if (last && !last.querySelector('.fill-handle')) { const fh = document.createElement('div'); fh.className = 'fill-handle'; last.appendChild(fh); }
     }
 }
 
-function updateFillPreview(endRow, endCol) {
-    // Visual feedback for fill preview
-    document.querySelectorAll('.fill-preview').forEach(el => el.classList.remove('fill-preview'));
+function updateFillPreview() {
+    clearFillPreview();
+    const b = getSelectionBounds(); if (!b || !fillEnd) return;
+    const tr = fillEnd.row, tc = fillEnd.col;
+    if (tc >= b.c1 && tc <= b.c2) {
+        if (tr > b.r2) for (let r = b.r2+1; r <= tr; r++) for (let c = b.c1; c <= b.c2; c++) document.querySelector(`td[data-row="${r}"][data-col="${c}"]`)?.classList.add('fill-preview');
+        if (tr < b.r1) for (let r = tr; r < b.r1; r++) for (let c = b.c1; c <= b.c2; c++) document.querySelector(`td[data-row="${r}"][data-col="${c}"]`)?.classList.add('fill-preview');
+    }
+    if (tr >= b.r1 && tr <= b.r2) {
+        if (tc > b.c2) for (let r = b.r1; r <= b.r2; r++) for (let c = b.c2+1; c <= tc; c++) document.querySelector(`td[data-row="${r}"][data-col="${c}"]`)?.classList.add('fill-preview');
+        if (tc < b.c1) for (let r = b.r1; r <= b.r2; r++) for (let c = tc; c < b.c1; c++) document.querySelector(`td[data-row="${r}"][data-col="${c}"]`)?.classList.add('fill-preview');
+    }
+}
+
+function clearFillPreview() { document.querySelectorAll('td.fill-preview').forEach(t => t.classList.remove('fill-preview')); }
+
+function performFill() {
+    const b = getSelectionBounds(); if (!b || !fillEnd) return;
+    const src = [];
+    for (let r = b.r1; r <= b.r2; r++) { const row = []; for (let c = b.c1; c <= b.c2; c++) row.push(workbookData[r]?.[c] ?? ''); src.push(row); }
     
-    if (!fillHandleStart || !selectionStart || !selectionEnd) return;
+    // Save state BEFORE making changes - enables Ctrl+Z for fill operations
+    saveState('fill');
     
-    const sourceMinRow = Math.min(selectionStart.row, selectionEnd.row);
-    const sourceMaxRow = Math.max(selectionStart.row, selectionEnd.row);
-    const sourceMinCol = Math.min(selectionStart.col, selectionEnd.col);
-    const sourceMaxCol = Math.max(selectionStart.col, selectionEnd.col);
-    
-    // Determine fill direction
-    const rowDiff = endRow - sourceMaxRow;
-    const colDiff = endCol - sourceMaxCol;
-    
-    let targetCells = [];
-    
-    if (Math.abs(rowDiff) > Math.abs(colDiff)) {
-        // Fill vertically
-        if (rowDiff > 0) {
-            for (let r = sourceMaxRow + 1; r <= endRow; r++) {
-                for (let c = sourceMinCol; c <= sourceMaxCol; c++) {
-                    targetCells.push(`${r}-${c}`);
-                }
-            }
-        } else if (endRow < sourceMinRow) {
-            for (let r = endRow; r < sourceMinRow; r++) {
-                for (let c = sourceMinCol; c <= sourceMaxCol; c++) {
-                    targetCells.push(`${r}-${c}`);
-                }
-            }
+    let cnt = 0;
+    const tr = fillEnd.row, tc = fillEnd.col;
+    if (tr > b.r2 && tc >= b.c1 && tc <= b.c2) {
+        for (let r = b.r2+1; r <= tr; r++) for (let c = b.c1; c <= b.c2; c++) {
+            const si = (r - b.r2 - 1) % src.length, ci = c - b.c1;
+            if (!workbookData[r]) workbookData[r] = new Array(headers.length).fill('');
+            workbookData[r][c] = detectPattern(src, ci, r - b.r1); cnt++;
         }
+    }
+    if (tr < b.r1 && tc >= b.c1 && tc <= b.c2) {
+        for (let r = b.r1-1; r >= tr; r--) for (let c = b.c1; c <= b.c2; c++) {
+            const si = src.length - 1 - ((b.r1 - 1 - r) % src.length), ci = c - b.c1;
+            if (!workbookData[r]) workbookData[r] = new Array(headers.length).fill('');
+            workbookData[r][c] = src[si][ci]; cnt++;
+        }
+    }
+    if (tc > b.c2 && tr >= b.r1 && tr <= b.r2) {
+        for (let c = b.c2+1; c <= tc; c++) for (let r = b.r1; r <= b.r2; r++) {
+            const si = (c - b.c2 - 1) % (b.c2 - b.c1 + 1), ri = r - b.r1;
+            workbookData[r][c] = src[ri][si]; cnt++;
+        }
+    }
+    if (tc < b.c1 && tr >= b.r1 && tr <= b.r2) {
+        for (let c = b.c1-1; c >= tc; c--) for (let r = b.r1; r <= b.r2; r++) {
+            const si = (b.c1 - 1 - c) % (b.c2 - b.c1 + 1), ri = r - b.r1;
+            workbookData[r][c] = src[ri][b.c2 - b.c1 - si]; cnt++;
+        }
+    }
+    
+    if (cnt) { 
+        showToast(t('cellsFilled', { count: cnt })); 
+        renderTable(); 
     } else {
-        // Fill horizontally
-        if (colDiff > 0) {
-            for (let r = sourceMinRow; r <= sourceMaxRow; r++) {
-                for (let c = sourceMaxCol + 1; c <= endCol; c++) {
-                    targetCells.push(`${r}-${c}`);
-                }
-            }
-        } else if (endCol < sourceMinCol) {
-            for (let r = sourceMinRow; r <= sourceMaxRow; r++) {
-                for (let c = endCol; c < sourceMinCol; c++) {
-                    targetCells.push(`${r}-${c}`);
-                }
-            }
-        }
+        // No changes made, remove saved state
+        history.pop();
+        updateButtonStates();
     }
-    
-    // Add visual preview
-    targetCells.forEach(cellKey => {
-        const [r, c] = cellKey.split('-').map(Number);
-        const input = document.querySelector(`input[data-row="${r}"][data-col="${c}"]`);
-        if (input) {
-            input.parentElement.classList.add('fill-preview');
-        }
-    });
 }
 
-function onFillHandleUp(e) {
-    document.removeEventListener('mousemove', onFillHandleMove);
-    document.removeEventListener('mouseup', onFillHandleUp);
-    
-    const element = document.elementFromPoint(e.clientX, e.clientY);
-    if (element && element.tagName === 'INPUT' && element.dataset.row !== undefined) {
-        const endRow = parseInt(element.dataset.row);
-        const endCol = parseInt(element.dataset.col);
-        performFill(endRow, endCol);
+function detectPattern(src, ci, offset) {
+    if (src.length >= 2) {
+        const v1 = parseFloat(src[0][ci]), v2 = parseFloat(src[1][ci]);
+        if (!isNaN(v1) && !isNaN(v2)) return v1 + (v2 - v1) * offset;
     }
-    
-    isDraggingFillHandle = false;
-    fillHandleStart = null;
-    document.querySelectorAll('.fill-preview').forEach(el => el.classList.remove('fill-preview'));
-    renderTable();
+    return src[offset % src.length][ci];
 }
 
-function performFill(endRow, endCol) {
-    if (!selectionStart || !selectionEnd) return;
-    
-    saveState();
-    
-    const sourceMinRow = Math.min(selectionStart.row, selectionEnd.row);
-    const sourceMaxRow = Math.max(selectionStart.row, selectionEnd.row);
-    const sourceMinCol = Math.min(selectionStart.col, selectionEnd.col);
-    const sourceMaxCol = Math.max(selectionStart.col, selectionEnd.col);
-    
-    const sourceHeight = sourceMaxRow - sourceMinRow + 1;
-    const sourceWidth = sourceMaxCol - sourceMinCol + 1;
-    
-    // Get source values
-    const sourceValues = [];
-    for (let r = sourceMinRow; r <= sourceMaxRow; r++) {
-        const row = [];
-        for (let c = sourceMinCol; c <= sourceMaxCol; c++) {
-            row.push(workbookData[r][c]);
-        }
-        sourceValues.push(row);
-    }
-    
-    // Detect patterns for smart fill
-    const patterns = detectPatterns(sourceValues);
-    
-    const rowDiff = endRow - sourceMaxRow;
-    const colDiff = endCol - sourceMaxCol;
-    
-    if (Math.abs(rowDiff) > Math.abs(colDiff)) {
-        // Fill vertically
-        if (rowDiff > 0) {
-            for (let r = sourceMaxRow + 1; r <= endRow; r++) {
-                const sourceRowIdx = (r - sourceMinRow) % sourceHeight;
-                const repeatNum = Math.floor((r - sourceMinRow) / sourceHeight);
-                for (let c = sourceMinCol; c <= sourceMaxCol; c++) {
-                    const sourceColIdx = c - sourceMinCol;
-                    workbookData[r][c] = getFilledValue(sourceValues[sourceRowIdx][sourceColIdx], patterns[sourceColIdx], repeatNum, r - sourceMinRow);
-                }
-            }
-        } else if (endRow < sourceMinRow) {
-            for (let r = sourceMinRow - 1; r >= endRow; r--) {
-                const sourceRowIdx = (sourceMinRow - r - 1) % sourceHeight;
-                const repeatNum = -Math.floor((sourceMinRow - r) / sourceHeight) - 1;
-                for (let c = sourceMinCol; c <= sourceMaxCol; c++) {
-                    const sourceColIdx = c - sourceMinCol;
-                    workbookData[r][c] = getFilledValue(sourceValues[sourceRowIdx][sourceColIdx], patterns[sourceColIdx], repeatNum, r - sourceMinRow);
-                }
-            }
-        }
-    } else {
-        // Fill horizontally
-        if (colDiff > 0) {
-            for (let r = sourceMinRow; r <= sourceMaxRow; r++) {
-                const sourceRowIdx = r - sourceMinRow;
-                for (let c = sourceMaxCol + 1; c <= endCol; c++) {
-                    const sourceColIdx = (c - sourceMinCol) % sourceWidth;
-                    const repeatNum = Math.floor((c - sourceMinCol) / sourceWidth);
-                    workbookData[r][c] = getFilledValue(sourceValues[sourceRowIdx][sourceColIdx], patterns[sourceColIdx], repeatNum, c - sourceMinCol);
-                }
-            }
-        } else if (endCol < sourceMinCol) {
-            for (let r = sourceMinRow; r <= sourceMaxRow; r++) {
-                const sourceRowIdx = r - sourceMinRow;
-                for (let c = sourceMinCol - 1; c >= endCol; c--) {
-                    const sourceColIdx = (sourceMinCol - c - 1) % sourceWidth;
-                    const repeatNum = -Math.floor((sourceMinCol - c) / sourceWidth) - 1;
-                    workbookData[r][c] = getFilledValue(sourceValues[sourceRowIdx][sourceColIdx], patterns[sourceColIdx], repeatNum, c - sourceMinCol);
-                }
-            }
-        }
-    }
-    
-    addChatMessage('system', t('fillApplied'));
+function startEditing(r, c) { editingCell = {row:r,col:c}; selectionStart = {row:r,col:c}; selectionEnd = {row:r,col:c}; renderTable(); }
+
+function finishEditing(r, c, val) {
+    if (!editingCell || editingCell.row !== r || editingCell.col !== c) return;
+    if (String(workbookData[r][c]) !== String(val)) { saveState('edit'); workbookData[r][c] = val; }
+    editingCell = null; renderTable();
 }
 
-// Detect numeric patterns for smart fill
-function detectPatterns(values) {
-    const patterns = [];
-    
-    for (let c = 0; c < values[0].length; c++) {
-        const colValues = values.map(row => row[c]);
-        
-        if (colValues.length >= 2) {
-            // Check for numeric sequence
-            const numbers = colValues.map(v => parseFloat(v)).filter(n => !isNaN(n));
-            if (numbers.length === colValues.length && numbers.length >= 2) {
-                const diffs = [];
-                for (let i = 1; i < numbers.length; i++) {
-                    diffs.push(numbers[i] - numbers[i-1]);
-                }
-                // Check if differences are constant (arithmetic sequence)
-                const allSame = diffs.every(d => Math.abs(d - diffs[0]) < 0.0001);
-                if (allSame) {
-                    patterns.push({ type: 'arithmetic', step: diffs[0], start: numbers[0] });
-                    continue;
-                }
-            }
-            
-            // Check for date patterns
-            const dates = colValues.map(v => new Date(v)).filter(d => !isNaN(d.getTime()));
-            if (dates.length === colValues.length && dates.length >= 2) {
-                const dayDiff = (dates[1] - dates[0]) / (1000 * 60 * 60 * 24);
-                patterns.push({ type: 'date', dayStep: dayDiff, start: dates[0] });
-                continue;
-            }
-        }
-        
-        // Default: repeat pattern
-        patterns.push({ type: 'repeat' });
-    }
-    
-    return patterns;
+function handleEditKey(e, r, c, inp) {
+    if (e.key === 'Enter') { e.preventDefault(); finishEditing(r, c, inp.value); if (r < workbookData.length - 1) { selectionStart = selectionEnd = {row:r+1,col:c}; } renderTable(); }
+    else if (e.key === 'Escape') { editingCell = null; renderTable(); }
+    else if (e.key === 'Tab') { e.preventDefault(); finishEditing(r, c, inp.value); const nc = e.shiftKey ? c-1 : c+1; if (nc >= 0 && nc < headers.length) { selectionStart = selectionEnd = {row:r,col:nc}; } renderTable(); }
 }
-
-function getFilledValue(sourceValue, pattern, repeatNum, position) {
-    if (!pattern || pattern.type === 'repeat') {
-        return sourceValue;
-    }
-    
-    if (pattern.type === 'arithmetic') {
-        const num = parseFloat(sourceValue);
-        if (!isNaN(num)) {
-            return String(num + pattern.step * position);
-        }
-    }
-    
-    if (pattern.type === 'date') {
-        const date = new Date(sourceValue);
-        if (!isNaN(date.getTime())) {
-            const newDate = new Date(date.getTime() + pattern.dayStep * position * 24 * 60 * 60 * 1000);
-            return newDate.toISOString().split('T')[0];
-        }
-    }
-    
-    return sourceValue;
-}
-
-// Mouse up handler for ending selection
-document.addEventListener('mouseup', (e) => {
-    if (isSelecting) {
-        isSelecting = false;
-        // Selection is now finalized - clear the pre-selection state
-        // Keep preSelectionState until next mousedown for potential ESC cancellation
-    }
-});
-
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
-    // Check if we're currently editing a cell (input is focused and not read-only)
-    const activeEl = document.activeElement;
-    const isEditingCell = activeEl && 
-                          activeEl.tagName === 'INPUT' && 
-                          activeEl.dataset.row !== undefined && 
-                          !activeEl.readOnly;
-    
-    // If editing a cell, let normal browser behavior handle copy/cut/paste/select
-    if (isEditingCell) {
-        // Only handle Escape to exit edit mode
-        if (e.key === 'Escape') {
-            activeEl.readOnly = true;
-            activeEl.classList.remove('editing');
-            e.preventDefault();
-        }
-        // Let all other keys work normally for text editing (Ctrl+C, Ctrl+V, etc.)
+    if (editingCell || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    const b = getSelectionBounds();
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key) && b) {
+        e.preventDefault();
+        let {row,col} = selectionStart;
+        if (e.key === 'ArrowUp') row = Math.max(0, row-1);
+        if (e.key === 'ArrowDown') row = Math.min(workbookData.length-1, row+1);
+        if (e.key === 'ArrowLeft') col = Math.max(0, col-1);
+        if (e.key === 'ArrowRight') col = Math.min(headers.length-1, col+1);
+        if (e.shiftKey) selectionEnd = {row,col}; else selectionStart = selectionEnd = {row,col};
+        updateSelectionVisual();
+        document.querySelector(`td[data-row="${row}"][data-col="${col}"]`)?.scrollIntoView({block:'nearest',inline:'nearest'});
         return;
     }
-    
-    // Not editing - handle cell-level shortcuts
-    
-    // Copy (Ctrl+C)
-    if ((e.ctrlKey || e.metaKey) && e.key === 'c' && selectedCells.size > 0) {
-        e.preventDefault();
-        copySelectedCells();
+    if ((e.key === 'Delete' || e.key === 'Backspace') && b) { e.preventDefault(); saveState('delete'); for (let r = b.r1; r <= b.r2; r++) for (let c = b.c1; c <= b.c2; c++) workbookData[r][c] = ''; renderTable(); return; }
+    if (e.key === 'Enter' && b && b.r1 === b.r2 && b.c1 === b.c2) { e.preventDefault(); startEditing(b.r1, b.c1); return; }
+    if (b && b.r1 === b.r2 && b.c1 === b.c2 && e.key.length === 1 && !e.ctrlKey && !e.metaKey) { workbookData[b.r1][b.c1] = ''; startEditing(b.r1, b.c1); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'c' && b) { e.preventDefault(); clipboard = []; for (let r = b.r1; r <= b.r2; r++) { const row = []; for (let c = b.c1; c <= b.c2; c++) row.push(workbookData[r]?.[c] ?? ''); clipboard.push(row); } navigator.clipboard.writeText(clipboard.map(r=>r.join('\t')).join('\n')).catch(()=>{}); showToast(t('cellsCopied',{count:(b.r2-b.r1+1)*(b.c2-b.c1+1)})); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'x' && b) { e.preventDefault(); clipboard = []; saveState('cut'); for (let r = b.r1; r <= b.r2; r++) { const row = []; for (let c = b.c1; c <= b.c2; c++) { row.push(workbookData[r]?.[c] ?? ''); workbookData[r][c] = ''; } clipboard.push(row); } renderTable(); showToast(t('copied')); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'v' && b && clipboard.length) { e.preventDefault(); saveState('paste'); for (let r = 0; r < clipboard.length; r++) for (let c = 0; c < clipboard[r].length; c++) { const tr = b.r1+r, tc = b.c1+c; if (tr < workbookData.length && tc < headers.length) workbookData[tr][tc] = clipboard[r][c]; } renderTable(); showToast(t('pasted')); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a' && workbookData.length) { e.preventDefault(); selectionStart = {row:0,col:0}; selectionEnd = {row:workbookData.length-1,col:headers.length-1}; updateSelectionVisual(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && history.length) { e.preventDefault(); undoBtn.click(); return; }
+    if (e.key === 'Escape') { 
+        if (!compareModal.classList.contains('hidden')) compareModal.classList.add('hidden'); 
+        else if (searchDialog && !searchDialog.classList.contains('hidden')) closeSearch(); 
+        else if (replaceDialog && !replaceDialog.classList.contains('hidden')) closeReplace(); 
+        else { selectionStart = selectionEnd = null; updateSelectionVisual(); } 
+        return; 
     }
-    
-    // Cut (Ctrl+X)
-    if ((e.ctrlKey || e.metaKey) && e.key === 'x' && selectedCells.size > 0) {
-        e.preventDefault();
-        cutSelectedCells();
-    }
-    
-    // Paste (Ctrl+V)
-    if ((e.ctrlKey || e.metaKey) && e.key === 'v' && clipboard) {
-        e.preventDefault();
-        pasteClipboard();
-    }
-    
-    // Delete (Delete key)
-    if (e.key === 'Delete' && selectedCells.size > 0) {
-        e.preventDefault();
-        deleteSelectedCells();
-    }
-    
-    // Fill down (Ctrl+D)
-    if ((e.ctrlKey || e.metaKey) && e.key === 'd' && selectedCells.size > 0) {
-        e.preventDefault();
-        fillDown();
-    }
-    
-    // Fill right (Ctrl+R)
-    if ((e.ctrlKey || e.metaKey) && e.key === 'r' && selectedCells.size > 0) {
-        e.preventDefault();
-        fillRight();
-    }
-    
-    // Select all (Ctrl+A) when in table but not editing
-    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-        if (activeEl && activeEl.tagName === 'INPUT' && activeEl.dataset.row !== undefined) {
-            e.preventDefault();
-            selectAllCells();
-        }
-    }
-    
-    // Escape to cancel selection or close modals
-    if (e.key === 'Escape') {
-        if (!compareModal.classList.contains('hidden')) {
-            compareModal.classList.add('hidden');
-        } else if (!aiHistoryModal.classList.contains('hidden')) {
-            aiHistoryModal.classList.add('hidden');
-        } else if (isSelecting) {
-            // Cancel ongoing selection and restore previous state
-            isSelecting = false;
-            if (preSelectionState) {
-                selectedCells = preSelectionState.selectedCells;
-                selectionStart = preSelectionState.selectionStart;
-                selectionEnd = preSelectionState.selectionEnd;
-                preSelectionState = null;
-            }
-            renderTable();
-        } else if (selectedCells.size > 0) {
-            // Clear selection if not in the middle of selecting
-            selectedCells.clear();
-            selectionStart = null;
-            selectionEnd = null;
-            preSelectionState = null;
-            renderTable();
-        }
-    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); openSearch(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'h') { e.preventDefault(); openReplace(); return; }
 });
 
-function copySelectedCells() {
-    if (selectedCells.size === 0) return;
-    
-    const cells = Array.from(selectedCells).map(key => key.split('-').map(Number));
-    const minRow = Math.min(...cells.map(c => c[0]));
-    const maxRow = Math.max(...cells.map(c => c[0]));
-    const minCol = Math.min(...cells.map(c => c[1]));
-    const maxCol = Math.max(...cells.map(c => c[1]));
-    
-    clipboard = {
-        data: [],
-        width: maxCol - minCol + 1,
-        height: maxRow - minRow + 1,
-        isCut: false
-    };
-    
-    for (let r = minRow; r <= maxRow; r++) {
-        const row = [];
-        for (let c = minCol; c <= maxCol; c++) {
-            row.push(workbookData[r] ? workbookData[r][c] || '' : '');
-        }
-        clipboard.data.push(row);
-    }
-    
-    // Also copy to system clipboard as TSV
-    const tsv = clipboard.data.map(row => row.join('\t')).join('\n');
-    navigator.clipboard.writeText(tsv).catch(() => {});
-    
-    addChatMessage('system', t('copiedCells', { count: selectedCells.size }));
-}
+// =====================================
+// ADVANCED FILTER SYSTEM
+// =====================================
 
-function cutSelectedCells() {
-    copySelectedCells();
-    if (clipboard) {
-        clipboard.isCut = true;
-        clipboard.sourceStart = {
-            row: Math.min(...Array.from(selectedCells).map(k => parseInt(k.split('-')[0]))),
-            col: Math.min(...Array.from(selectedCells).map(k => parseInt(k.split('-')[1])))
-        };
-    }
-}
-
-function pasteClipboard() {
-    if (!clipboard || selectedCells.size === 0) return;
-    
-    saveState();
-    
-    const targetCells = Array.from(selectedCells).map(key => key.split('-').map(Number));
-    const targetMinRow = Math.min(...targetCells.map(c => c[0]));
-    const targetMinCol = Math.min(...targetCells.map(c => c[1]));
-    
-    // Paste data
-    for (let r = 0; r < clipboard.height; r++) {
-        for (let c = 0; c < clipboard.width; c++) {
-            const targetRow = targetMinRow + r;
-            const targetCol = targetMinCol + c;
-            
-            if (targetRow < workbookData.length && targetCol < headers.length) {
-                workbookData[targetRow][targetCol] = clipboard.data[r][c];
-            }
-        }
-    }
-    
-    // If cut, clear source cells
-    if (clipboard.isCut && clipboard.sourceStart) {
-        for (let r = 0; r < clipboard.height; r++) {
-            for (let c = 0; c < clipboard.width; c++) {
-                const srcRow = clipboard.sourceStart.row + r;
-                const srcCol = clipboard.sourceStart.col + c;
-                if (srcRow !== targetMinRow + r || srcCol !== targetMinCol + c) {
-                    if (srcRow < workbookData.length && srcCol < headers.length) {
-                        workbookData[srcRow][srcCol] = '';
-                    }
-                }
-            }
-        }
-        clipboard.isCut = false;
-    }
-    
-    renderTable();
-    addChatMessage('system', t('pastedCells'));
-}
-
-function deleteSelectedCells() {
-    if (selectedCells.size === 0) return;
-    
-    saveState();
-    
-    selectedCells.forEach(cellKey => {
-        const [r, c] = cellKey.split('-').map(Number);
-        if (workbookData[r]) {
-            workbookData[r][c] = '';
-        }
-    });
-    
-    renderTable();
-    addChatMessage('system', t('deletedCells', { count: selectedCells.size }));
-}
-
-function fillDown() {
-    if (selectedCells.size === 0) return;
-    
-    saveState();
-    
-    const cells = Array.from(selectedCells).map(key => key.split('-').map(Number));
-    const minRow = Math.min(...cells.map(c => c[0]));
-    const maxRow = Math.max(...cells.map(c => c[0]));
-    const cols = [...new Set(cells.map(c => c[1]))].sort((a,b) => a-b);
-    
-    cols.forEach(col => {
-        const sourceValue = workbookData[minRow][col];
-        for (let r = minRow + 1; r <= maxRow; r++) {
-            workbookData[r][col] = sourceValue;
-        }
-    });
-    
-    renderTable();
-    addChatMessage('system', t('fillDownApplied'));
-}
-
-function fillRight() {
-    if (selectedCells.size === 0) return;
-    
-    saveState();
-    
-    const cells = Array.from(selectedCells).map(key => key.split('-').map(Number));
-    const minCol = Math.min(...cells.map(c => c[1]));
-    const maxCol = Math.max(...cells.map(c => c[1]));
-    const rows = [...new Set(cells.map(c => c[0]))].sort((a,b) => a-b);
-    
-    rows.forEach(row => {
-        const sourceValue = workbookData[row][minCol];
-        for (let c = minCol + 1; c <= maxCol; c++) {
-            workbookData[row][c] = sourceValue;
-        }
-    });
-    
-    renderTable();
-    addChatMessage('system', t('fillRightApplied'));
-}
-
-function selectAllCells() {
-    selectedCells.clear();
-    selectionStart = { row: 0, col: 0 };
-    selectionEnd = { row: workbookData.length - 1, col: headers.length - 1 };
-    
-    for (let r = 0; r < workbookData.length; r++) {
-        for (let c = 0; c < headers.length; c++) {
-            selectedCells.add(`${r}-${c}`);
-        }
-    }
-    
-    renderTable();
+function hasActiveFilter(colIndex) {
+    const f = activeFilters[colIndex];
+    if (!f) return false;
+    if (f.type === 'values' && f.values?.size > 0) return true;
+    if (f.type === 'text' && f.value) return true;
+    if (f.type === 'number' && (f.value1 !== '' || f.value2 !== '')) return true;
+    return false;
 }
 
 function applyFilters() {
-    let filtered = workbookData.map((data, idx) => ({data, originalIndex: idx}));
-    
-    for (let colIndex in activeFilters) {
-        const filterValues = activeFilters[colIndex];
-        if (filterValues && filterValues.size > 0) {
-            filtered = filtered.filter(row => {
-                const cellValue = String(row.data[colIndex] !== undefined ? row.data[colIndex] : '');
-                return filterValues.has(cellValue);
+    let f = workbookData.map((d,i)=>({data:d,originalIndex:i}));
+    for (let ci in activeFilters) {
+        const filter = activeFilters[ci];
+        if (!filter) continue;
+        
+        if (filter.type === 'values' && filter.values?.size > 0) {
+            f = f.filter(r => filter.values.has(String(r.data[ci] ?? '')));
+        } else if (filter.type === 'text' && filter.value) {
+            const val = filter.value.toLowerCase();
+            f = f.filter(r => {
+                const cellVal = String(r.data[ci] ?? '').toLowerCase();
+                switch(filter.operator) {
+                    case 'contains': return cellVal.includes(val);
+                    case 'notcontains': return !cellVal.includes(val);
+                    case 'startswith': return cellVal.startsWith(val);
+                    case 'endswith': return cellVal.endsWith(val);
+                    case 'equals': return cellVal === val;
+                    case 'notequals': return cellVal !== val;
+                    case 'empty': return cellVal === '';
+                    case 'notempty': return cellVal !== '';
+                    default: return true;
+                }
+            });
+        } else if (filter.type === 'number') {
+            const v1 = parseFloat(filter.value1);
+            const v2 = parseFloat(filter.value2);
+            f = f.filter(r => {
+                const cellVal = parseFloat(r.data[ci]);
+                if (isNaN(cellVal)) return filter.operator === 'empty';
+                switch(filter.operator) {
+                    case 'equals': return !isNaN(v1) && cellVal === v1;
+                    case 'notequals': return !isNaN(v1) && cellVal !== v1;
+                    case 'greater': return !isNaN(v1) && cellVal > v1;
+                    case 'greaterequal': return !isNaN(v1) && cellVal >= v1;
+                    case 'less': return !isNaN(v1) && cellVal < v1;
+                    case 'lessequal': return !isNaN(v1) && cellVal <= v1;
+                    case 'between': return !isNaN(v1) && !isNaN(v2) && cellVal >= v1 && cellVal <= v2;
+                    case 'empty': return false;
+                    case 'notempty': return true;
+                    default: return true;
+                }
             });
         }
     }
-    
-    return filtered;
+    return f;
 }
 
-function showFilterDropdown(e, colIndex) {
-    e.stopPropagation();
-    
-    // Remove existing dropdowns
+function showFilterDropdown(e, ci) {
+    e.stopPropagation(); 
     document.querySelectorAll('.filter-dropdown').forEach(d => d.remove());
-
-    const dropdown = document.createElement('div');
-    dropdown.className = 'filter-dropdown';
-
-    const searchInput = document.createElement('input');
-    searchInput.type = 'text';
-    searchInput.placeholder = 'Search...';
-    dropdown.appendChild(searchInput);
-
-    // Action buttons
-    const actionsDiv = document.createElement('div');
-    actionsDiv.className = 'filter-actions';
     
-    const selectAllBtn = document.createElement('button');
-    selectAllBtn.textContent = t('selectAll');
-    selectAllBtn.onclick = () => {
-        delete activeFilters[colIndex];
-        optionsDiv.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
-        renderTable();
-    };
-    actionsDiv.appendChild(selectAllBtn);
+    const dd = document.createElement('div'); 
+    dd.className = 'filter-dropdown filter-dropdown-advanced';
+    
+    // Filter type tabs
+    const tabs = document.createElement('div');
+    tabs.className = 'filter-tabs';
+    const currentFilter = activeFilters[ci];
+    const currentType = currentFilter?.type || 'values';
+    
+    const tabData = [
+        { id: 'values', label: t('filterByValues') || 'Values' },
+        { id: 'text', label: t('filterByText') || 'Text' },
+        { id: 'number', label: t('filterByNumber') || 'Number' }
+    ];
+    
+    tabData.forEach(tab => {
+        const btn = document.createElement('button');
+        btn.className = 'filter-tab' + (currentType === tab.id ? ' active' : '');
+        btn.textContent = tab.label;
+        btn.onclick = (ev) => { ev.stopPropagation(); switchFilterTab(dd, ci, tab.id); };
+        tabs.appendChild(btn);
+    });
+    dd.appendChild(tabs);
+    
+    const content = document.createElement('div');
+    content.className = 'filter-content';
+    content.id = 'filterContent';
+    dd.appendChild(content);
     
     const clearBtn = document.createElement('button');
-    clearBtn.textContent = t('clearAll');
-    clearBtn.onclick = () => {
-        activeFilters[colIndex] = new Set();
-        optionsDiv.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+    clearBtn.className = 'filter-clear-btn';
+    clearBtn.textContent = t('clearFilter') || 'Clear Filter';
+    clearBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        delete activeFilters[ci];
         renderTable();
+        dd.remove();
     };
-    actionsDiv.appendChild(clearBtn);
+    dd.appendChild(clearBtn);
     
-    dropdown.appendChild(actionsDiv);
-
-    const optionsDiv = document.createElement('div');
-    optionsDiv.className = 'filter-options';
-
-    // Get unique values from the column
-    const uniqueValues = [...new Set(workbookData.map(row => {
-        const val = row[colIndex];
-        return val !== undefined && val !== null ? String(val) : '';
-    }))].sort((a, b) => {
-        // Try numeric sort first
-        const numA = parseFloat(a);
-        const numB = parseFloat(b);
-        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-        return a.localeCompare(b);
-    });
+    e.target.closest('th').appendChild(dd);
+    renderFilterContent(content, ci, currentType);
     
-    const currentFilter = activeFilters[colIndex];
-    const hasFilter = currentFilter && currentFilter.size > 0;
-
-    uniqueValues.forEach(value => {
-        const option = document.createElement('div');
-        option.className = 'filter-option';
-        
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.checked = !hasFilter || currentFilter.has(value);
-        
-        checkbox.onchange = () => {
-            if (!activeFilters[colIndex]) {
-                activeFilters[colIndex] = new Set(uniqueValues);
-            }
-            
-            if (checkbox.checked) {
-                activeFilters[colIndex].add(value);
-            } else {
-                activeFilters[colIndex].delete(value);
-            }
-            
-            if (activeFilters[colIndex].size === uniqueValues.length) {
-                delete activeFilters[colIndex];
-            }
-            
-            renderTable();
-        };
-        
-        const label = document.createElement('span');
-        label.textContent = value === '' ? '(blank)' : value;
-        
-        option.appendChild(checkbox);
-        option.appendChild(label);
-        optionsDiv.appendChild(option);
-    });
-
-    dropdown.appendChild(optionsDiv);
-    
-    const th = e.target.closest('th');
-    th.appendChild(dropdown);
-
-    searchInput.oninput = () => {
-        const search = searchInput.value.toLowerCase();
-        optionsDiv.querySelectorAll('.filter-option').forEach(opt => {
-            const text = opt.textContent.toLowerCase();
-            opt.style.display = text.includes(search) ? 'flex' : 'none';
-        });
-    };
-
-    const closeHandler = (e) => {
-        if (!dropdown.contains(e.target) && e.target !== dropdown) {
-            dropdown.remove();
+    const closeHandler = (evt) => {
+        if (!dd.contains(evt.target) && !evt.target.classList.contains('filter-icon')) {
+            dd.remove();
             document.removeEventListener('click', closeHandler);
         }
     };
-    
-    setTimeout(() => {
-        document.addEventListener('click', closeHandler);
-    }, 0);
-    
-    searchInput.focus();
+    setTimeout(() => document.addEventListener('click', closeHandler), 0);
 }
 
+function switchFilterTab(dd, ci, type) {
+    dd.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+    const index = type === 'values' ? 1 : type === 'text' ? 2 : 3;
+    dd.querySelector(`.filter-tab:nth-child(${index})`).classList.add('active');
+    renderFilterContent(dd.querySelector('#filterContent'), ci, type);
+}
+
+function renderFilterContent(container, ci, type) {
+    container.innerHTML = '';
+    if (type === 'values') renderValuesFilter(container, ci);
+    else if (type === 'text') renderTextFilter(container, ci);
+    else if (type === 'number') renderNumberFilter(container, ci);
+}
+
+function renderValuesFilter(container, ci) {
+    const si = document.createElement('input'); 
+    si.type = 'text'; 
+    si.placeholder = t('searchPlaceholder') || 'Search...'; 
+    si.className = 'filter-search';
+    container.appendChild(si);
+    
+    const ad = document.createElement('div'); 
+    ad.className = 'filter-actions';
+    const ab = document.createElement('button'); 
+    ab.textContent = t('selectAll'); 
+    ab.onclick = (ev) => { 
+        ev.stopPropagation();
+        delete activeFilters[ci]; 
+        od.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true); 
+        renderTable(); 
+    }; 
+    ad.appendChild(ab);
+    const cb = document.createElement('button'); 
+    cb.textContent = t('clearAll'); 
+    cb.onclick = (ev) => { 
+        ev.stopPropagation();
+        activeFilters[ci] = { type: 'values', values: new Set() }; 
+        od.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false); 
+        renderTable(); 
+    }; 
+    ad.appendChild(cb);
+    container.appendChild(ad);
+    
+    const od = document.createElement('div'); 
+    od.className = 'filter-options';
+    const uv = [...new Set(workbookData.map(r => String(r[ci] ?? '')))].sort((a, b) => {
+        const na = parseFloat(a), nb = parseFloat(b);
+        return !isNaN(na) && !isNaN(nb) ? na - nb : a.localeCompare(b);
+    });
+    
+    const cf = activeFilters[ci];
+    const hf = cf?.type === 'values' && cf.values?.size > 0;
+    
+    uv.forEach(v => {
+        const o = document.createElement('div'); 
+        o.className = 'filter-option';
+        const chk = document.createElement('input'); 
+        chk.type = 'checkbox'; 
+        chk.checked = !hf || cf.values.has(v);
+        chk.onchange = () => { 
+            if (!activeFilters[ci] || activeFilters[ci].type !== 'values') {
+                activeFilters[ci] = { type: 'values', values: new Set(uv) };
+            }
+            if (chk.checked) activeFilters[ci].values.add(v); 
+            else activeFilters[ci].values.delete(v); 
+            if (activeFilters[ci].values.size === uv.length) delete activeFilters[ci]; 
+            renderTable(); 
+        };
+        const l = document.createElement('span'); 
+        l.textContent = v === '' ? '(blank)' : v;
+        o.appendChild(chk); 
+        o.appendChild(l); 
+        od.appendChild(o);
+    });
+    container.appendChild(od);
+    
+    si.oninput = () => { 
+        const s = si.value.toLowerCase(); 
+        od.querySelectorAll('.filter-option').forEach(o => {
+            o.style.display = o.textContent.toLowerCase().includes(s) ? 'flex' : 'none';
+        }); 
+    };
+}
+
+function renderTextFilter(container, ci) {
+    const currentFilter = activeFilters[ci]?.type === 'text' ? activeFilters[ci] : null;
+    
+    const selectDiv = document.createElement('div');
+    selectDiv.className = 'filter-select-group';
+    const select = document.createElement('select');
+    select.className = 'filter-select';
+    const options = [
+        { value: 'contains', label: t('filterContains') || 'Contains' },
+        { value: 'notcontains', label: t('filterNotContains') || 'Does not contain' },
+        { value: 'startswith', label: t('filterStartsWith') || 'Starts with' },
+        { value: 'endswith', label: t('filterEndsWith') || 'Ends with' },
+        { value: 'equals', label: t('filterEquals') || 'Equals' },
+        { value: 'notequals', label: t('filterNotEquals') || 'Does not equal' },
+        { value: 'empty', label: t('filterEmpty') || 'Is empty' },
+        { value: 'notempty', label: t('filterNotEmpty') || 'Is not empty' }
+    ];
+    options.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (currentFilter?.operator === opt.value) o.selected = true;
+        select.appendChild(o);
+    });
+    selectDiv.appendChild(select);
+    container.appendChild(selectDiv);
+    
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'filter-input';
+    input.placeholder = t('filterValuePlaceholder') || 'Enter value...';
+    input.value = currentFilter?.value || '';
+    if (select.value === 'empty' || select.value === 'notempty') input.style.display = 'none';
+    container.appendChild(input);
+    
+    select.onchange = () => {
+        input.style.display = (select.value === 'empty' || select.value === 'notempty') ? 'none' : 'block';
+        applyTextFilter();
+    };
+    
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'filter-apply-btn';
+    applyBtn.textContent = t('applyFilter') || 'Apply';
+    applyBtn.onclick = (ev) => { ev.stopPropagation(); applyTextFilter(); };
+    container.appendChild(applyBtn);
+    
+    function applyTextFilter() {
+        const op = select.value;
+        const val = input.value;
+        if (op === 'empty' || op === 'notempty' || val) {
+            activeFilters[ci] = { type: 'text', operator: op, value: val };
+            renderTable();
+        }
+    }
+    
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyTextFilter(); });
+}
+
+function renderNumberFilter(container, ci) {
+    const currentFilter = activeFilters[ci]?.type === 'number' ? activeFilters[ci] : null;
+    
+    const selectDiv = document.createElement('div');
+    selectDiv.className = 'filter-select-group';
+    const select = document.createElement('select');
+    select.className = 'filter-select';
+    const options = [
+        { value: 'equals', label: t('filterNumEquals') || 'Equals' },
+        { value: 'notequals', label: t('filterNumNotEquals') || 'Does not equal' },
+        { value: 'greater', label: t('filterGreater') || 'Greater than' },
+        { value: 'greaterequal', label: t('filterGreaterEqual') || 'Greater or equal' },
+        { value: 'less', label: t('filterLess') || 'Less than' },
+        { value: 'lessequal', label: t('filterLessEqual') || 'Less or equal' },
+        { value: 'between', label: t('filterBetween') || 'Between' },
+        { value: 'empty', label: t('filterEmpty') || 'Is empty' },
+        { value: 'notempty', label: t('filterNotEmpty') || 'Is not empty' }
+    ];
+    options.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (currentFilter?.operator === opt.value) o.selected = true;
+        select.appendChild(o);
+    });
+    selectDiv.appendChild(select);
+    container.appendChild(selectDiv);
+    
+    const inputsDiv = document.createElement('div');
+    inputsDiv.className = 'filter-inputs';
+    
+    const input1 = document.createElement('input');
+    input1.type = 'number';
+    input1.className = 'filter-input';
+    input1.placeholder = t('filterValue') || 'Value';
+    input1.value = currentFilter?.value1 || '';
+    inputsDiv.appendChild(input1);
+    
+    const input2 = document.createElement('input');
+    input2.type = 'number';
+    input2.className = 'filter-input';
+    input2.placeholder = t('filterValueTo') || 'To';
+    input2.value = currentFilter?.value2 || '';
+    input2.style.display = select.value === 'between' ? 'block' : 'none';
+    inputsDiv.appendChild(input2);
+    
+    if (select.value === 'empty' || select.value === 'notempty') inputsDiv.style.display = 'none';
+    container.appendChild(inputsDiv);
+    
+    select.onchange = () => {
+        input2.style.display = select.value === 'between' ? 'block' : 'none';
+        inputsDiv.style.display = (select.value === 'empty' || select.value === 'notempty') ? 'none' : 'block';
+        applyNumberFilter();
+    };
+    
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'filter-apply-btn';
+    applyBtn.textContent = t('applyFilter') || 'Apply';
+    applyBtn.onclick = (ev) => { ev.stopPropagation(); applyNumberFilter(); };
+    container.appendChild(applyBtn);
+    
+    function applyNumberFilter() {
+        const op = select.value;
+        const v1 = input1.value;
+        const v2 = input2.value;
+        if (op === 'empty' || op === 'notempty' || v1 !== '' || (op === 'between' && v2 !== '')) {
+            activeFilters[ci] = { type: 'number', operator: op, value1: v1, value2: v2 };
+            renderTable();
+        }
+    }
+    
+    input1.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyNumberFilter(); });
+    input2.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyNumberFilter(); });
+}
+// =====================================
+// SEARCH DIALOG (Ctrl+F)
+// =====================================
+let searchDialog = null, searchMatches = [], currentSearchIndex = -1;
+
+function createSearchDialog() {
+    if (searchDialog) return;
+    searchDialog = document.createElement('div'); 
+    searchDialog.className = 'search-dialog hidden';
+    searchDialog.innerHTML = `
+        <div class="search-content">
+            <input type="text" id="searchInput" placeholder="${t('findPlaceholder') || 'Find...'}">
+            <span id="searchCount"></span>
+            <button id="searchPrev" title="Previous (Shift+Enter)">▲</button>
+            <button id="searchNext" title="Next (Enter)">▼</button>
+            <button id="searchClose" title="Close (Esc)">×</button>
+        </div>
+    `;
+    document.body.appendChild(searchDialog);
+    document.getElementById('searchInput').addEventListener('input', performSearch);
+    document.getElementById('searchInput').addEventListener('keydown', (e) => { 
+        if (e.key === 'Enter') { 
+            e.shiftKey ? navigateSearchResult(-1) : navigateSearchResult(1); 
+            e.preventDefault(); 
+        } else if (e.key === 'Escape') closeSearch(); 
+    });
+    document.getElementById('searchPrev').addEventListener('click', () => navigateSearchResult(-1));
+    document.getElementById('searchNext').addEventListener('click', () => navigateSearchResult(1));
+    document.getElementById('searchClose').addEventListener('click', closeSearch);
+}
+
+function openSearch() { 
+    closeReplace();
+    createSearchDialog(); 
+    searchDialog.classList.remove('hidden'); 
+    document.getElementById('searchInput').focus(); 
+    document.getElementById('searchInput').select(); 
+}
+
+function closeSearch() { 
+    if (searchDialog) searchDialog.classList.add('hidden'); 
+    searchMatches = []; 
+    currentSearchIndex = -1; 
+    const countEl = document.getElementById('searchCount');
+    if (countEl) countEl.textContent = ''; 
+    document.querySelectorAll('.search-match,.search-current').forEach(e => e.classList.remove('search-match','search-current')); 
+}
+
+function performSearch() {
+    const q = document.getElementById('searchInput').value.toLowerCase().trim(); 
+    searchMatches = []; 
+    currentSearchIndex = -1;
+    document.querySelectorAll('.search-match,.search-current').forEach(e => e.classList.remove('search-match','search-current'));
+    if (!q) { document.getElementById('searchCount').textContent = ''; return; }
+    workbookData.forEach((r, ri) => r.forEach((c, ci) => { 
+        if (String(c).toLowerCase().includes(q)) searchMatches.push({ row: ri, col: ci }); 
+    }));
+    document.getElementById('searchCount').textContent = searchMatches.length ? `${searchMatches.length} ${t('found') || 'found'}` : t('noMatches') || 'No matches';
+    searchMatches.forEach(m => document.querySelector(`td[data-row="${m.row}"][data-col="${m.col}"]`)?.classList.add('search-match'));
+    if (searchMatches.length) navigateSearchResult(0, true);
+}
+
+function navigateSearchResult(dir, init = false) {
+    if (!searchMatches.length) return;
+    if (currentSearchIndex >= 0) { 
+        const p = searchMatches[currentSearchIndex]; 
+        document.querySelector(`td[data-row="${p.row}"][data-col="${p.col}"]`)?.classList.replace('search-current', 'search-match'); 
+    }
+    currentSearchIndex = init ? 0 : (currentSearchIndex + dir + searchMatches.length) % searchMatches.length;
+    const c = searchMatches[currentSearchIndex], td = document.querySelector(`td[data-row="${c.row}"][data-col="${c.col}"]`);
+    if (td) { td.classList.replace('search-match', 'search-current'); td.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    document.getElementById('searchCount').textContent = `${currentSearchIndex + 1} ${t('of') || 'of'} ${searchMatches.length}`;
+}
+
+// =====================================
+// FIND & REPLACE DIALOG (Ctrl+H)
+// =====================================
+let replaceDialog = null;
+let replaceMatches = [];
+let currentReplaceIndex = -1;
+
+function createReplaceDialog() {
+    if (replaceDialog) return;
+    replaceDialog = document.createElement('div');
+    replaceDialog.className = 'replace-dialog hidden';
+    replaceDialog.innerHTML = `
+        <div class="replace-header">
+            <span>${t('findAndReplace') || 'Find and Replace'}</span>
+            <button id="replaceClose" class="replace-close-btn">×</button>
+        </div>
+        <div class="replace-content">
+            <div class="replace-row">
+                <label>${t('findLabel') || 'Find:'}</label>
+                <input type="text" id="replaceFindInput" placeholder="${t('findPlaceholder') || 'Find...'}">
+            </div>
+            <div class="replace-row">
+                <label>${t('replaceLabel') || 'Replace:'}</label>
+                <input type="text" id="replaceWithInput" placeholder="${t('replacePlaceholder') || 'Replace with...'}">
+            </div>
+            <div class="replace-options">
+                <label class="replace-option">
+                    <input type="checkbox" id="replaceMatchCase">
+                    <span>${t('matchCase') || 'Match case'}</span>
+                </label>
+                <label class="replace-option">
+                    <input type="checkbox" id="replaceWholeCell">
+                    <span>${t('matchWholeCell') || 'Match entire cell'}</span>
+                </label>
+            </div>
+            <div class="replace-count" id="replaceCount"></div>
+            <div class="replace-buttons">
+                <button id="replaceFindPrev" title="Previous">◀ ${t('previous') || 'Prev'}</button>
+                <button id="replaceFindNext" title="Next">${t('next') || 'Next'} ▶</button>
+                <button id="replaceOne">${t('replace') || 'Replace'}</button>
+                <button id="replaceAll">${t('replaceAll') || 'Replace All'}</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(replaceDialog);
+    
+    document.getElementById('replaceFindInput').addEventListener('input', performReplaceSearch);
+    document.getElementById('replaceFindInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.shiftKey ? navigateReplaceResult(-1) : navigateReplaceResult(1);
+            e.preventDefault();
+        } else if (e.key === 'Escape') closeReplace();
+    });
+    document.getElementById('replaceWithInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); replaceOne(); } 
+        else if (e.key === 'Escape') closeReplace();
+    });
+    document.getElementById('replaceMatchCase').addEventListener('change', performReplaceSearch);
+    document.getElementById('replaceWholeCell').addEventListener('change', performReplaceSearch);
+    document.getElementById('replaceFindPrev').addEventListener('click', () => navigateReplaceResult(-1));
+    document.getElementById('replaceFindNext').addEventListener('click', () => navigateReplaceResult(1));
+    document.getElementById('replaceOne').addEventListener('click', replaceOne);
+    document.getElementById('replaceAll').addEventListener('click', replaceAllMatches);
+    document.getElementById('replaceClose').addEventListener('click', closeReplace);
+}
+
+function openReplace() {
+    closeSearch();
+    createReplaceDialog();
+    replaceDialog.classList.remove('hidden');
+    document.getElementById('replaceFindInput').focus();
+    document.getElementById('replaceFindInput').select();
+}
+
+function closeReplace() {
+    if (replaceDialog) replaceDialog.classList.add('hidden');
+    replaceMatches = [];
+    currentReplaceIndex = -1;
+    const countEl = document.getElementById('replaceCount');
+    if (countEl) countEl.textContent = '';
+    document.querySelectorAll('.search-match,.search-current').forEach(e => e.classList.remove('search-match', 'search-current'));
+}
+
+function performReplaceSearch() {
+    const findText = document.getElementById('replaceFindInput').value;
+    const matchCase = document.getElementById('replaceMatchCase').checked;
+    const wholeCell = document.getElementById('replaceWholeCell').checked;
+    
+    replaceMatches = [];
+    currentReplaceIndex = -1;
+    document.querySelectorAll('.search-match,.search-current').forEach(e => e.classList.remove('search-match', 'search-current'));
+    
+    if (!findText) {
+        document.getElementById('replaceCount').textContent = '';
+        return;
+    }
+    
+    const searchVal = matchCase ? findText : findText.toLowerCase();
+    
+    workbookData.forEach((r, ri) => r.forEach((c, ci) => {
+        const cellVal = matchCase ? String(c) : String(c).toLowerCase();
+        let isMatch = wholeCell ? cellVal === searchVal : cellVal.includes(searchVal);
+        if (isMatch) replaceMatches.push({ row: ri, col: ci });
+    }));
+    
+    document.getElementById('replaceCount').textContent = replaceMatches.length 
+        ? `${replaceMatches.length} ${t('matchesFound') || 'match(es) found'}` 
+        : t('noMatches') || 'No matches';
+    
+    replaceMatches.forEach(m => {
+        document.querySelector(`td[data-row="${m.row}"][data-col="${m.col}"]`)?.classList.add('search-match');
+    });
+    
+    if (replaceMatches.length) navigateReplaceResult(0, true);
+}
+
+function navigateReplaceResult(dir, init = false) {
+    if (!replaceMatches.length) return;
+    
+    if (currentReplaceIndex >= 0 && currentReplaceIndex < replaceMatches.length) {
+        const p = replaceMatches[currentReplaceIndex];
+        document.querySelector(`td[data-row="${p.row}"][data-col="${p.col}"]`)?.classList.replace('search-current', 'search-match');
+    }
+    
+    currentReplaceIndex = init ? 0 : (currentReplaceIndex + dir + replaceMatches.length) % replaceMatches.length;
+    const c = replaceMatches[currentReplaceIndex];
+    const td = document.querySelector(`td[data-row="${c.row}"][data-col="${c.col}"]`);
+    
+    if (td) {
+        td.classList.replace('search-match', 'search-current');
+        td.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    
+    document.getElementById('replaceCount').textContent = `${currentReplaceIndex + 1} ${t('of') || 'of'} ${replaceMatches.length}`;
+}
+
+function replaceOne() {
+    if (!replaceMatches.length || currentReplaceIndex < 0) return;
+    
+    const findText = document.getElementById('replaceFindInput').value;
+    const replaceText = document.getElementById('replaceWithInput').value;
+    const matchCase = document.getElementById('replaceMatchCase').checked;
+    const wholeCell = document.getElementById('replaceWholeCell').checked;
+    
+    if (!findText) return;
+    
+    saveState('replace');
+    
+    const match = replaceMatches[currentReplaceIndex];
+    const cellVal = String(workbookData[match.row][match.col]);
+    
+    if (wholeCell) {
+        workbookData[match.row][match.col] = replaceText;
+    } else {
+        const regex = new RegExp(escapeRegex(findText), matchCase ? 'g' : 'gi');
+        workbookData[match.row][match.col] = cellVal.replace(regex, replaceText);
+    }
+    
+    renderTable();
+    performReplaceSearch();
+    showToast(t('replaced') || 'Replaced 1 match');
+}
+
+function replaceAllMatches() {
+    const findText = document.getElementById('replaceFindInput').value;
+    const replaceText = document.getElementById('replaceWithInput').value;
+    const matchCase = document.getElementById('replaceMatchCase').checked;
+    const wholeCell = document.getElementById('replaceWholeCell').checked;
+    
+    if (!findText || !replaceMatches.length) return;
+    
+    saveState('replaceAll');
+    
+    let count = 0;
+    const searchVal = matchCase ? findText : findText.toLowerCase();
+    
+    workbookData.forEach((r, ri) => r.forEach((c, ci) => {
+        const cellVal = String(c);
+        const compareVal = matchCase ? cellVal : cellVal.toLowerCase();
+        
+        if (wholeCell) {
+            if (compareVal === searchVal) {
+                workbookData[ri][ci] = replaceText;
+                count++;
+            }
+        } else {
+            if (compareVal.includes(searchVal)) {
+                const regex = new RegExp(escapeRegex(findText), matchCase ? 'g' : 'gi');
+                workbookData[ri][ci] = cellVal.replace(regex, replaceText);
+                count++;
+            }
+        }
+    }));
+    
+    renderTable();
+    performReplaceSearch();
+    showToast(t('replacedAll', { count }) || `Replaced ${count} match(es)`);
+}
+
+function escapeRegex(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// =====================================
+// RESIZE COLUMNS
+// =====================================
 function startResize(e, colIndex, th) {
     e.preventDefault();
-    e.stopPropagation();
-    
-    const startX = e.pageX;
+    const startX = e.clientX;
     const startWidth = th.offsetWidth;
-    const handle = e.target;
     
-    handle.classList.add('resizing');
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
     function onMouseMove(e) {
-        const diff = e.pageX - startX;
-        const newWidth = Math.max(60, startWidth + diff);
+        const newWidth = Math.max(50, startWidth + e.clientX - startX);
+        th.style.width = newWidth + 'px';
         columnWidths[colIndex] = newWidth + 'px';
-        th.style.width = columnWidths[colIndex];
-        
-        const rows = tableBody.querySelectorAll('tr');
-        rows.forEach(row => {
-            const cell = row.children[colIndex + 1];
-            if (cell) {
-                cell.style.width = columnWidths[colIndex];
-            }
-        });
     }
-
+    
     function onMouseUp() {
-        handle.classList.remove('resizing');
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
     }
-
+    
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
 }
 
+// =====================================
+// BUTTON STATES
+// =====================================
 function updateButtonStates() {
     const hasData = workbookData.length > 0;
-    const hasHistory = history.length > 0;
-    const hasAIHistory = aiHistory.length > 0;
-    
-    aiButton.disabled = !hasData;
-    aiPrompt.disabled = !hasData;
-    undoBtn.disabled = !hasHistory;
+    const hasApiKey = apiKey !== '';
     addRowBtn.disabled = !hasData;
     addColBtn.disabled = !hasData;
+    compareBtn.disabled = !history.length;
     downloadBtn.disabled = !hasData;
-    compareBtn.disabled = !hasHistory;
-    aiHistoryBtn.disabled = !hasAIHistory;
+    aiPrompt.disabled = !hasData || !hasApiKey;
+    aiButton.disabled = !hasData || !hasApiKey;
+    undoBtn.disabled = !history.length;
 }
 
-// Detect changes between two data sets
-function detectChanges(oldHeaders, oldData, newHeaders, newData) {
-    const changes = [];
-    const modified = new Set();
-    
-    const maxHeaderLen = Math.max(oldHeaders.length, newHeaders.length);
-    for (let i = 0; i < maxHeaderLen; i++) {
-        if (oldHeaders[i] !== newHeaders[i]) {
-            if (i >= oldHeaders.length) {
-                changes.push(`Added column "${newHeaders[i]}"`);
-            } else if (i >= newHeaders.length) {
-                changes.push(`Removed column "${oldHeaders[i]}"`);
-            } else {
-                changes.push(`Renamed column "${oldHeaders[i]}" to "${newHeaders[i]}"`);
-            }
-        }
+// =====================================
+// AI PROCESSING
+// =====================================
+stopBtn.addEventListener('click', () => {
+    if (isProcessing) {
+        shouldStopProcessing = true;
+        stopBtn.disabled = true;
+        stopBtn.querySelector('span').textContent = t('cancellingProcess');
     }
-    
-    if (newData.length > oldData.length) {
-        changes.push(`Added ${newData.length - oldData.length} row(s)`);
-    } else if (newData.length < oldData.length) {
-        changes.push(`Removed ${oldData.length - newData.length} row(s)`);
-    }
-    
-    let cellChanges = 0;
-    const minRows = Math.min(oldData.length, newData.length);
-    const minCols = Math.min(oldHeaders.length, newHeaders.length);
-    
-    for (let r = 0; r < minRows; r++) {
-        for (let c = 0; c < minCols; c++) {
-            const oldVal = oldData[r] && oldData[r][c] !== undefined ? String(oldData[r][c]) : '';
-            const newVal = newData[r] && newData[r][c] !== undefined ? String(newData[r][c]) : '';
-            if (oldVal !== newVal) {
-                cellChanges++;
-                modified.add(`${r}-${c}`);
-            }
-        }
-    }
-    
-    for (let r = 0; r < newData.length; r++) {
-        for (let c = 0; c < newHeaders.length; c++) {
-            if (r >= oldData.length || c >= oldHeaders.length) {
-                modified.add(`${r}-${c}`);
-            }
-        }
-    }
-    
-    if (cellChanges > 0) {
-        changes.push(`Modified ${cellChanges} cell(s)`);
-    }
-    
-    return { changes, modified };
-}
+});
 
-// Safety mechanisms
-function userAskedToDeleteRows(prompt) {
-    const deleteKeywords = [
-        'delete', 'remove', 'erase', 'drop', 'clear', 'wipe', 'get rid', 'throw away',
-        'eliminar', 'borrar', 'quitar', 'elimina', 'borra', 'suprimir',
-        'esborrar', 'treure', 'elimina', 'esborra', 'suprimeix'
-    ];
-    const rowKeywords = [
-        'row', 'rows', 'line', 'lines', 'record', 'records', 'entry', 'entries', 'item', 'items',
-        'fila', 'filas', 'línea', 'líneas', 'registro', 'registros', 'entrada', 'entradas',
-        'fila', 'files', 'línia', 'línies', 'registre', 'registres'
-    ];
-    
-    const lowerPrompt = prompt.toLowerCase();
-    
-    const hasDeleteKeyword = deleteKeywords.some(kw => lowerPrompt.includes(kw));
-    const hasRowKeyword = rowKeywords.some(kw => lowerPrompt.includes(kw));
-    
-    return hasDeleteKeyword && hasRowKeyword;
-}
-
-function mergeAIChangesIntoOriginal(oldData, newData, oldHeaders, newHeaders, userPrompt) {
-    if (userAskedToDeleteRows(userPrompt)) {
-        return { 
-            data: newData, 
-            headers: newHeaders, 
-            restored: 0,
-            message: null 
-        };
-    }
-    
-    if (newData.length >= oldData.length) {
-        return { 
-            data: newData, 
-            headers: newHeaders, 
-            restored: 0,
-            message: null 
-        };
-    }
-    
-    const finalHeaders = newHeaders.length >= oldHeaders.length ? [...newHeaders] : [...oldHeaders];
-    const numCols = finalHeaders.length;
-    
-    const finalData = [];
-    for (let i = 0; i < oldData.length; i++) {
-        const row = [];
-        for (let j = 0; j < numCols; j++) {
-            row.push(oldData[i] && oldData[i][j] !== undefined ? oldData[i][j] : '');
-        }
-        finalData.push(row);
-    }
-    
-    for (let aiRowIdx = 0; aiRowIdx < newData.length; aiRowIdx++) {
-        const aiRow = newData[aiRowIdx];
-        
-        let bestMatchIdx = -1;
-        let bestMatchScore = -1;
-        
-        for (let origIdx = 0; origIdx < oldData.length; origIdx++) {
-            const origRow = oldData[origIdx];
-            let score = 0;
-            
-            for (let col = 0; col < Math.min(origRow.length, aiRow.length); col++) {
-                const origVal = String(origRow[col] ?? '');
-                const aiVal = String(aiRow[col] ?? '');
-                if (origVal === aiVal) {
-                    score += 10;
-                } else if (origVal !== '' && aiVal !== '' && 
-                          (origVal.includes(aiVal) || aiVal.includes(origVal))) {
-                    score += 3;
-                }
-            }
-            
-            if (origIdx === aiRowIdx) score += 20;
-            else if (Math.abs(origIdx - aiRowIdx) === 1) score += 10;
-            else if (Math.abs(origIdx - aiRowIdx) <= 3) score += 5;
-            
-            if (score > bestMatchScore) {
-                bestMatchScore = score;
-                bestMatchIdx = origIdx;
-            }
-        }
-        
-        if (bestMatchIdx !== -1 && bestMatchScore > 0) {
-            for (let col = 0; col < aiRow.length; col++) {
-                const origVal = String(oldData[bestMatchIdx]?.[col] ?? '');
-                const aiVal = String(aiRow[col] ?? '');
-                
-                if (origVal !== aiVal) {
-                    finalData[bestMatchIdx][col] = aiRow[col];
-                }
-            }
-        }
-    }
-    
-    const protectedCount = oldData.length - newData.length;
-    
-    return {
-        data: finalData,
-        headers: finalHeaders,
-        restored: protectedCount,
-        message: `⚠️ PROTECTED ${protectedCount} row(s) from being deleted! Your edits were applied to the correct rows.`
-    };
-}
-
-// AI Button handler
 aiButton.addEventListener('click', async () => {
     const prompt = aiPrompt.value.trim();
-    if (!prompt) {
-        showStatus(t('enterCommand'), 'error');
-        return;
-    }
-
-    saveState();
+    if (!prompt) { showStatus(t('enterCommand'), 'error'); return; }
     addChatMessage('user', prompt);
     aiPrompt.value = '';
+    
+    isProcessing = true;
+    shouldStopProcessing = false;
+    preProcessingState = { headers: [...headers], data: workbookData.map(r => [...r]), colors: {...cellColors}, modifiedCells: new Set(modifiedCells) };
+    
+    stopBtn.classList.remove('hidden');
+    stopBtn.disabled = false;
+    stopBtn.querySelector('span').textContent = t('stopText');
     aiButton.disabled = true;
-
-    addChatMessage('ai', t('processing'));
-
+    
+    saveState('ai');
+    
     try {
-        // Smart data preparation - extract only relevant rows/columns
-        const extraction = prepareDataForAI(workbookData, headers, prompt);
-        
-        // Show context info if working with partial data
-        if (extraction.isPartialData && extraction.context) {
-            addChatMessage('system', `📊 ${extraction.context}`);
-        }
-        
-        const systemPrompt = `You are a helpful assistant that can answer questions about spreadsheet data AND modify the data when requested.
-
-IMPORTANT: You must determine if the user is:
-1. ASKING A QUESTION about the data (e.g., "what's the total?", "how many rows?", "which item has the highest value?")
-2. REQUESTING A MODIFICATION (e.g., "add 10%", "sort by", "delete rows where", "change X to Y")
-
-For QUESTIONS: Return JSON with format:
-{"type": "question", "answer": "Your detailed answer here based on the data"}
-
-For MODIFICATIONS: Return JSON with format:
-{"type": "modification", "headers": [...], "data": [[...], [...]], "description": "Brief description of what was changed"}
-
-CRITICAL RULES FOR MODIFICATIONS:
-- Return ALL rows from the data I give you (with your modifications applied)
-- NEVER omit or delete rows unless explicitly asked
-- Only modify what the user asks for, preserve everything else
-- The headers array should match the columns I sent you
-
-Always respond with valid JSON only. No markdown, no code blocks, no extra text.`;
-
-        const userContent = `Spreadsheet headers: ${JSON.stringify(extraction.headersToSend)}
-Data (${extraction.dataToSend.length} rows): ${JSON.stringify(extraction.dataToSend)}
-${extraction.context ? `\nContext: ${extraction.context}` : ''}
-${extraction.isPartialData ? `\nNote: This is a subset of the full data. Full dataset has ${workbookData.length} rows and ${headers.length} columns.` : ''}
-
-User request: ${prompt}`;
-
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userContent }
-                ],
-                temperature: 0.3,
-                max_tokens: 16000 // Increased for larger responses
-            })
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(`API error: ${response.status} - ${errorData.error?.message || 'Unknown error'}`);
-        }
-
-        const result = await response.json();
-        const content = result.choices[0].message.content.trim();
-        
-        // Remove the "processing" message
-        const messages = chatMessages.querySelectorAll('.message.ai');
-        const lastAiMsg = messages[messages.length - 1];
-        if (lastAiMsg && lastAiMsg.textContent === t('processing')) {
-            lastAiMsg.remove();
-        }
-        
-        // Parse response - try to extract JSON
-        let parsed;
-        try {
-            // First try direct parse
-            parsed = JSON.parse(content);
-        } catch (e) {
-            // Try to extract JSON from response (might have extra text)
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                // If no JSON found, treat as a plain text answer
-                addChatMessage('ai', content);
-                history.pop();
-                return;
-            }
-            try {
-                parsed = JSON.parse(jsonMatch[0]);
-            } catch (e2) {
-                throw new Error(t('invalidResponseFormat') + ': ' + e2.message);
-            }
-        }
-        
-        if (parsed.type === 'question') {
-            addChatMessage('ai', parsed.answer);
-            history.pop();
-        } else if (parsed.type === 'modification' && parsed.headers && parsed.data) {
-            // Apply modifications - merge back into full dataset
-            const oldHeaders = [...headers];
-            const oldData = workbookData.map(row => [...row]);
-            
-            // SMART MERGE: Apply AI changes back to the correct positions
-            const mergeResult = mergePartialAIChanges(
-                oldData,
-                oldHeaders,
-                parsed.data,
-                parsed.headers,
-                extraction.rowIndices,
-                extraction.colIndices,
-                prompt
-            );
-            
-            headers = mergeResult.headers;
-            workbookData = mergeResult.data;
-            
-            const { changes, modified } = detectChanges(oldHeaders, oldData, headers, workbookData);
-            modifiedCells = modified;
-            
-            lastAIChange = {
-                before: { headers: oldHeaders, data: oldData },
-                after: { headers: headers, data: workbookData }
-            };
-            
-            const description = parsed.description || changes.join(', ') || 'Changes applied';
-            saveAIState(description, prompt);
-            
-            renderTable();
-            
-            if (mergeResult.message) {
-                addChatMessage('system', mergeResult.message);
-            }
-            
-            addChatMessage('ai', `✓ ${description}`);
-            
-            if (changes.length > 0 && !parsed.description) {
-                addChatMessage('ai', `Details: ${changes.join(', ')}`);
-            }
-        } else if (parsed.answer || parsed.response || parsed.message) {
-            // Handle various question response formats
-            addChatMessage('ai', parsed.answer || parsed.response || parsed.message);
-            history.pop();
-        } else {
-            throw new Error(t('invalidResponseFormat'));
-        }
-    } catch (error) {
-        const messages = chatMessages.querySelectorAll('.message.ai');
-        const lastAiMsg = messages[messages.length - 1];
-        if (lastAiMsg && lastAiMsg.textContent === t('processing')) {
-            lastAiMsg.remove();
-        }
-        
-        // Provide more helpful error messages
-        let errorMessage = error.message;
-        if (error.message.includes('API error: 429')) {
-            errorMessage = t('rateLimitError') || 'Rate limit exceeded. Please wait a moment and try again.';
-        } else if (error.message.includes('API error: 400')) {
-            errorMessage = t('requestTooLarge') || 'Request too large. Try being more specific about which rows/columns to modify.';
-        } else if (error.message.includes('API error: 401')) {
-            errorMessage = t('invalidApiKey') || 'Invalid API key. Please check your OpenAI API key.';
-        } else if (error.message.includes('API error: 500') || error.message.includes('API error: 503')) {
-            errorMessage = t('serverError') || 'OpenAI server error. Please try again later.';
-        } else if (error.message.includes('Invalid response format') || error.message.includes('JSON')) {
-            errorMessage = t('invalidResponseFormat') + ' ' + (t('trySimpler') || 'Try a simpler request.');
-        }
-        
-        addChatMessage('ai', t('apiError', { error: errorMessage }));
-        showStatus(t('apiError', { error: errorMessage }), 'error');
-        history.pop();
+        if (workbookData.length > 100) await processLargeDataset(prompt);
+        else await processSingleRequest(prompt);
+    } catch (err) {
+        removeProgressMessage();
+        addChatMessage('system', t('apiError', { error: err.message }));
     } finally {
+        isProcessing = false;
+        shouldStopProcessing = false;
+        preProcessingState = null;
+        stopBtn.classList.add('hidden');
+        aiButton.disabled = false;
         updateButtonStates();
     }
 });
 
-// SMART MERGE: Merge partial AI changes back into the full dataset
-function mergePartialAIChanges(originalData, originalHeaders, aiData, aiHeaders, rowIndices, colIndices, prompt) {
-    // Start with a copy of original data
-    const newData = originalData.map(row => [...row]);
-    const newHeaders = [...originalHeaders];
-    
-    // Update headers if columns were modified
-    if (aiHeaders && colIndices) {
-        colIndices.forEach((origColIdx, aiColIdx) => {
-            if (aiHeaders[aiColIdx] !== undefined && origColIdx < newHeaders.length) {
-                newHeaders[origColIdx] = aiHeaders[aiColIdx];
-            }
-        });
-    }
-    
-    // Map AI data back to original positions
-    if (aiData && rowIndices && colIndices) {
-        aiData.forEach((aiRow, aiRowIdx) => {
-            const origRowIdx = rowIndices[aiRowIdx];
-            if (origRowIdx !== undefined && origRowIdx < newData.length) {
-                aiRow.forEach((cellValue, aiColIdx) => {
-                    const origColIdx = colIndices[aiColIdx];
-                    if (origColIdx !== undefined && origColIdx < newHeaders.length) {
-                        newData[origRowIdx][origColIdx] = cellValue;
-                    }
-                });
-            }
-        });
-    }
-    
-    // Handle case where AI returned more rows (additions)
-    if (aiData && aiData.length > rowIndices.length) {
-        // AI added new rows - append them
-        for (let i = rowIndices.length; i < aiData.length; i++) {
-            const newRow = new Array(newHeaders.length).fill('');
-            aiData[i].forEach((cellValue, aiColIdx) => {
-                const origColIdx = colIndices[aiColIdx];
-                if (origColIdx !== undefined) {
-                    newRow[origColIdx] = cellValue;
-                }
-            });
-            newData.push(newRow);
-        }
-    }
-    
-    // Check if user asked to delete rows
-    const askedToDelete = userAskedToDeleteRows(prompt);
+function userAskedToDeleteRows(prompt) {
+    const deleteKeywords = ['delete', 'remove', 'eliminate', 'drop', 'erase', 'clear rows', 'empty rows', 'blank rows', 'eliminar', 'borrar', 'elimina', 'esborra'];
+    const p = prompt.toLowerCase();
+    return deleteKeywords.some(k => p.includes(k));
+}
+
+function mergeAIChangesIntoOriginal(originalData, aiData, originalHeaders, aiHeaders, prompt) {
+    let newHeaders = [...originalHeaders];
+    let newData = originalData.map(r => [...r]);
     let message = null;
     
-    // If AI returned fewer rows and user didn't ask to delete, we've preserved everything
-    if (aiData && aiData.length < rowIndices.length && !askedToDelete) {
-        message = `✓ Modified ${aiData.length} rows. All other rows preserved.`;
-    }
+    const aiHeadersLower = aiHeaders.map(h => String(h).toLowerCase().trim());
+    const originalHeadersLower = originalHeaders.map(h => String(h).toLowerCase().trim());
     
-    return {
-        data: newData,
-        headers: newHeaders,
-        message: message
+    aiHeaders.forEach((h, i) => {
+        const hLower = String(h).toLowerCase().trim();
+        if (!originalHeadersLower.includes(hLower)) { newHeaders.push(h); newData.forEach(r => r.push('')); }
+    });
+    
+    const headerMapping = aiHeaders.map(h => {
+        const hLower = String(h).toLowerCase().trim();
+        let idx = originalHeadersLower.indexOf(hLower);
+        if (idx === -1) idx = newHeaders.findIndex(nh => String(nh).toLowerCase().trim() === hLower);
+        return idx;
+    });
+    
+    const matchRows = (origRow, aiRows) => {
+        for (let i = 0; i < aiRows.length; i++) {
+            let matches = 0, comparisons = 0;
+            for (let j = 0; j < Math.min(3, aiHeaders.length); j++) {
+                const origIdx = headerMapping[j];
+                if (origIdx !== -1 && origRow[origIdx] != null && aiRows[i][j] != null) {
+                    comparisons++;
+                    if (String(origRow[origIdx]).trim() === String(aiRows[i][j]).trim()) matches++;
+                }
+            }
+            if (comparisons > 0 && matches / comparisons >= 0.5) return i;
+        }
+        return -1;
     };
-}
-
-// Prepare data for AI - SMART extraction based on user's request
-function prepareDataForAI(data, hdrs, prompt) {
-    // Parse the prompt to identify which rows/columns the user is referring to
-    const extraction = extractReferencedData(data, hdrs, prompt);
     
-    return {
-        dataToSend: extraction.data,
-        headersToSend: extraction.headers,
-        rowIndices: extraction.rowIndices,
-        colIndices: extraction.colIndices,
-        isPartialData: extraction.isPartial,
-        context: extraction.context
-    };
-}
-
-// Smart extraction: parse user's request to find referenced rows and columns
-function extractReferencedData(data, hdrs, prompt) {
-    const lowerPrompt = prompt.toLowerCase();
-    
-    // Find referenced columns
-    const referencedCols = findReferencedColumns(hdrs, lowerPrompt);
-    
-    // Find referenced rows
-    const referencedRows = findReferencedRows(data, hdrs, lowerPrompt);
-    
-    // If no specific references found, check if data is small enough to send all
-    const fullDataSize = JSON.stringify(data).length;
-    const MAX_FULL_SIZE = 50000; // ~50KB limit for full data
-    
-    if (referencedCols.length === 0 && referencedRows.length === 0) {
-        // No specific references - send all if small, otherwise send with context
-        if (fullDataSize <= MAX_FULL_SIZE) {
-            return {
-                data: data,
-                headers: hdrs,
-                rowIndices: data.map((_, i) => i),
-                colIndices: hdrs.map((_, i) => i),
-                isPartial: false,
-                context: null
-            };
-        } else {
-            // Too large - send first 200 rows with warning
-            const maxRows = 200;
-            return {
-                data: data.slice(0, maxRows),
-                headers: hdrs,
-                rowIndices: Array.from({length: Math.min(maxRows, data.length)}, (_, i) => i),
-                colIndices: hdrs.map((_, i) => i),
-                isPartial: true,
-                context: `Dataset has ${data.length} rows total. Showing first ${maxRows}. Apply changes to ALL rows.`
-            };
-        }
-    }
-    
-    // We have specific references - extract only what's needed
-    const colIndices = referencedCols.length > 0 ? referencedCols : hdrs.map((_, i) => i);
-    const rowIndices = referencedRows.length > 0 ? referencedRows : data.map((_, i) => i);
-    
-    // Limit rows if still too many
-    const MAX_ROWS = 500;
-    const finalRowIndices = rowIndices.length > MAX_ROWS ? rowIndices.slice(0, MAX_ROWS) : rowIndices;
-    
-    // Extract the subset
-    const extractedHeaders = colIndices.map(i => hdrs[i]);
-    const extractedData = finalRowIndices.map(rowIdx => 
-        colIndices.map(colIdx => data[rowIdx]?.[colIdx] ?? '')
-    );
-    
-    // Build context message
-    let context = null;
-    if (referencedRows.length > 0 || referencedCols.length > 0) {
-        const parts = [];
-        if (referencedCols.length > 0 && referencedCols.length < hdrs.length) {
-            parts.push(`Working with columns: ${extractedHeaders.join(', ')}`);
-        }
-        if (referencedRows.length > 0 && referencedRows.length < data.length) {
-            parts.push(`Working with ${finalRowIndices.length} specific rows (indices: ${finalRowIndices.slice(0, 10).map(i => i+1).join(', ')}${finalRowIndices.length > 10 ? '...' : ''})`);
-        }
-        if (rowIndices.length > MAX_ROWS) {
-            parts.push(`Note: Limited to first ${MAX_ROWS} matching rows out of ${rowIndices.length}`);
-        }
-        context = parts.join('. ');
-    }
-    
-    return {
-        data: extractedData,
-        headers: extractedHeaders,
-        rowIndices: finalRowIndices,
-        colIndices: colIndices,
-        isPartial: referencedCols.length > 0 || referencedRows.length > 0,
-        context: context
-    };
-}
-
-// Find columns mentioned in the prompt
-function findReferencedColumns(hdrs, prompt) {
-    const referenced = new Set();
-    
-    // Check for exact column name matches (case insensitive)
-    hdrs.forEach((header, idx) => {
-        if (header && prompt.includes(header.toLowerCase())) {
-            referenced.add(idx);
+    const aiDataCopy = aiData.map(r => [...r]);
+    newData.forEach((row, ri) => {
+        const aiRowIdx = matchRows(row, aiDataCopy);
+        if (aiRowIdx !== -1) {
+            aiHeaders.forEach((_, ai) => {
+                const ti = headerMapping[ai];
+                if (ti !== -1 && aiDataCopy[aiRowIdx][ai] !== undefined) row[ti] = aiDataCopy[aiRowIdx][ai];
+            });
+            aiDataCopy.splice(aiRowIdx, 1);
         }
     });
     
-    // Check for column letter references (A, B, C, etc.)
-    const colLetterMatch = prompt.match(/\bcolumn\s*([a-z])\b/gi);
-    if (colLetterMatch) {
-        colLetterMatch.forEach(match => {
-            const letter = match.replace(/column\s*/i, '').toUpperCase();
-            const idx = letter.charCodeAt(0) - 65; // A=0, B=1, etc.
-            if (idx >= 0 && idx < hdrs.length) {
-                referenced.add(idx);
-            }
+    if (aiDataCopy.length > 0 && (prompt.toLowerCase().includes('add') || prompt.toLowerCase().includes('new') || prompt.toLowerCase().includes('añad') || prompt.toLowerCase().includes('afeg'))) {
+        aiDataCopy.forEach(ar => {
+            const nr = new Array(newHeaders.length).fill('');
+            aiHeaders.forEach((_, ai) => { const ti = headerMapping[ai]; if (ti !== -1) nr[ti] = ar[ai]; });
+            newData.push(nr);
         });
+        message = `Added ${aiDataCopy.length} new row(s)`;
     }
     
-    // Check for "columns X and Y" or "columns X, Y, Z"
-    const multiColMatch = prompt.match(/columns?\s+([a-z,\s]+(?:and\s+[a-z])?)/gi);
-    if (multiColMatch) {
-        multiColMatch.forEach(match => {
-            const letters = match.match(/[a-z](?=\s|,|$|and)/gi);
-            if (letters) {
-                letters.forEach(letter => {
-                    const idx = letter.toUpperCase().charCodeAt(0) - 65;
-                    if (idx >= 0 && idx < hdrs.length) {
-                        referenced.add(idx);
-                    }
-                });
-            }
-        });
-    }
-    
-    return Array.from(referenced).sort((a, b) => a - b);
+    return { headers: newHeaders, data: newData, message };
 }
 
-// Find rows mentioned in the prompt
-function findReferencedRows(data, hdrs, prompt) {
-    const referenced = new Set();
-    
-    // Check for specific row numbers: "row 5", "rows 1-10", "rows 1, 2, 3"
-    const rowNumMatch = prompt.match(/rows?\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+)*)/gi);
-    if (rowNumMatch) {
-        rowNumMatch.forEach(match => {
-            const nums = match.replace(/rows?\s*/i, '');
-            
-            // Handle ranges like "1-10" or "1–10"
-            const rangeMatch = nums.match(/(\d+)\s*[-–]\s*(\d+)/);
-            if (rangeMatch) {
-                const start = parseInt(rangeMatch[1]) - 1; // Convert to 0-indexed
-                const end = parseInt(rangeMatch[2]) - 1;
-                for (let i = Math.max(0, start); i <= Math.min(end, data.length - 1); i++) {
-                    referenced.add(i);
-                }
-            } else {
-                // Handle comma-separated: "1, 2, 3"
-                const numbers = nums.match(/\d+/g);
-                if (numbers) {
-                    numbers.forEach(n => {
-                        const idx = parseInt(n) - 1; // Convert to 0-indexed
-                        if (idx >= 0 && idx < data.length) {
-                            referenced.add(idx);
-                        }
-                    });
-                }
-            }
-        });
-    }
-    
-    // Check for "first X rows", "last X rows"
-    const firstMatch = prompt.match(/first\s*(\d+)\s*rows?/i);
-    if (firstMatch) {
-        const count = parseInt(firstMatch[1]);
-        for (let i = 0; i < Math.min(count, data.length); i++) {
-            referenced.add(i);
-        }
-    }
-    
-    const lastMatch = prompt.match(/last\s*(\d+)\s*rows?/i);
-    if (lastMatch) {
-        const count = parseInt(lastMatch[1]);
-        for (let i = Math.max(0, data.length - count); i < data.length; i++) {
-            referenced.add(i);
-        }
-    }
-    
-    // Check for "where column = value" style filters
-    const whereMatch = prompt.match(/where\s+(\w+)\s*(=|is|equals?|contains?|>|<|>=|<=)\s*["']?([^"'\s]+)["']?/gi);
-    if (whereMatch) {
-        whereMatch.forEach(match => {
-            const parts = match.match(/where\s+(\w+)\s*(=|is|equals?|contains?|>|<|>=|<=)\s*["']?([^"'\s]+)["']?/i);
-            if (parts) {
-                const colName = parts[1].toLowerCase();
-                const operator = parts[2].toLowerCase();
-                const value = parts[3];
-                
-                // Find column index
-                const colIdx = hdrs.findIndex(h => h && h.toLowerCase() === colName);
-                if (colIdx !== -1) {
-                    data.forEach((row, rowIdx) => {
-                        const cellValue = String(row[colIdx] ?? '').toLowerCase();
-                        const compareValue = value.toLowerCase();
-                        
-                        let matches = false;
-                        if (operator === '=' || operator === 'is' || operator.startsWith('equal')) {
-                            matches = cellValue === compareValue;
-                        } else if (operator.startsWith('contain')) {
-                            matches = cellValue.includes(compareValue);
-                        } else if (operator === '>') {
-                            matches = parseFloat(cellValue) > parseFloat(compareValue);
-                        } else if (operator === '<') {
-                            matches = parseFloat(cellValue) < parseFloat(compareValue);
-                        } else if (operator === '>=') {
-                            matches = parseFloat(cellValue) >= parseFloat(compareValue);
-                        } else if (operator === '<=') {
-                            matches = parseFloat(cellValue) <= parseFloat(compareValue);
-                        }
-                        
-                        if (matches) {
-                            referenced.add(rowIdx);
-                        }
-                    });
-                }
-            }
-        });
-    }
-    
-    // Check for value-based references like "rows with X" or "rows containing X"
-    const containingMatch = prompt.match(/rows?\s+(?:with|containing|that\s+have|where)\s+["']?([^"']+)["']?/gi);
-    if (containingMatch && referenced.size === 0) {
-        containingMatch.forEach(match => {
-            const valueMatch = match.match(/["']([^"']+)["']|(\S+)$/);
-            if (valueMatch) {
-                const searchValue = (valueMatch[1] || valueMatch[2]).toLowerCase();
-                data.forEach((row, rowIdx) => {
-                    if (row.some(cell => String(cell).toLowerCase().includes(searchValue))) {
-                        referenced.add(rowIdx);
-                    }
-                });
-            }
-        });
-    }
-    
-    return Array.from(referenced).sort((a, b) => a - b);
-}
-
-// Apply modification rules from AI to full dataset
-function applyModificationRules(rules, description) {
-    const oldHeaders = [...headers];
-    const oldData = workbookData.map(row => [...row]);
-    
-    saveState();
-    
-    rules.forEach(rule => {
-        const colIndex = typeof rule.column === 'number' 
-            ? rule.column 
-            : headers.findIndex(h => h.toLowerCase() === rule.column.toLowerCase());
-        
-        if (colIndex === -1) return;
-        
-        workbookData.forEach((row, rowIndex) => {
-            const oldValue = row[colIndex];
-            let newValue = oldValue;
-            
-            // Check condition if present
-            if (rule.condition) {
-                try {
-                    const conditionFn = new Function('old_value', 'row', 'headers', `return ${rule.condition}`);
-                    if (!conditionFn(oldValue, row, headers)) return;
-                } catch (e) {
-                    console.warn('Condition evaluation failed:', e);
-                }
-            }
-            
-            switch (rule.action) {
-                case 'multiply':
-                    const num = parseFloat(oldValue);
-                    if (!isNaN(num)) {
-                        newValue = String(num * parseFloat(rule.value));
-                    }
-                    break;
-                case 'add':
-                    const num2 = parseFloat(oldValue);
-                    if (!isNaN(num2)) {
-                        newValue = String(num2 + parseFloat(rule.value));
-                    }
-                    break;
-                case 'replace':
-                    newValue = rule.value;
-                    break;
-                case 'formula':
-                    try {
-                        const formulaFn = new Function('row', 'headers', 
-                            `const ${headers.map((h, i) => `${h.replace(/[^a-zA-Z0-9_]/g, '_')} = parseFloat(row[${i}]) || 0`).join('; ')}; return ${rule.value}`);
-                        newValue = String(formulaFn(row, headers));
-                    } catch (e) {
-                        console.warn('Formula evaluation failed:', e);
-                    }
-                    break;
-            }
-            
-            row[colIndex] = newValue;
-        });
-    });
-    
-    const { changes, modified } = detectChanges(oldHeaders, oldData, headers, workbookData);
-    modifiedCells = modified;
-    
-    lastAIChange = {
-        before: { headers: oldHeaders, data: oldData },
-        after: { headers: headers, data: workbookData }
-    };
-    
-    saveAIState(description || 'Applied modification rules', 'Bulk modification');
-    
-    renderTable();
-    addChatMessage('ai', `✓ ${description || 'Applied changes to all ' + workbookData.length + ' rows'}`);
-}
-
-// Apply partial changes from sample to full dataset
-function applyPartialChangesToFullData(fullData, partialData, oldHeaders, newHeaders) {
-    // Detect the pattern of changes from partial data
-    const changes = [];
-    const minRows = Math.min(fullData.length, partialData.length);
-    
-    for (let r = 0; r < minRows; r++) {
+function detectChanges(oldHeaders, oldData, newHeaders, newData) {
+    const changes = [], modified = new Set();
+    if (newHeaders.length > oldHeaders.length) changes.push(t('columnsAdded', { count: newHeaders.length - oldHeaders.length }));
+    if (newData.length > oldData.length) changes.push(t('rowsAdded', { count: newData.length - oldData.length }));
+    if (newData.length < oldData.length) changes.push(t('rowsRemoved', { count: oldData.length - newData.length }));
+    let mc = 0;
+    for (let r = 0; r < Math.min(oldData.length, newData.length); r++) {
         for (let c = 0; c < Math.min(oldHeaders.length, newHeaders.length); c++) {
-            const oldVal = String(fullData[r][c] ?? '');
-            const newVal = String(partialData[r][c] ?? '');
-            
-            if (oldVal !== newVal) {
-                changes.push({
-                    row: r,
-                    col: c,
-                    oldVal,
-                    newVal,
-                    // Try to detect pattern
-                    isMultiplication: !isNaN(parseFloat(oldVal)) && !isNaN(parseFloat(newVal)) && parseFloat(oldVal) !== 0
-                        ? parseFloat(newVal) / parseFloat(oldVal) : null,
-                    isAddition: !isNaN(parseFloat(oldVal)) && !isNaN(parseFloat(newVal))
-                        ? parseFloat(newVal) - parseFloat(oldVal) : null
-                });
-            }
+            if (String(oldData[r]?.[c] ?? '') !== String(newData[r]?.[c] ?? '')) { mc++; modified.add(`${r}-${c}`); }
         }
     }
+    if (mc > 0) changes.push(t('cellsModified', { count: mc }));
+    return { changes, modified };
+}
+
+async function processLargeDataset(prompt) {
+    const bs = calculateDynamicBatchSize();
+    const tb = Math.ceil(workbookData.length / bs);
+    addChatMessage('system', t('largeDataset', { rows: workbookData.length, batches: tb }));
     
-    // If changes follow a pattern, apply to all rows
-    const colPatterns = {};
-    changes.forEach(ch => {
-        if (!colPatterns[ch.col]) colPatterns[ch.col] = [];
-        colPatterns[ch.col].push(ch);
-    });
+    const oh = [...headers], od = workbookData.map(r => [...r]);
+    const am = new Set();
     
-    const result = fullData.map(row => [...row]);
-    
-    Object.entries(colPatterns).forEach(([col, colChanges]) => {
-        const colIdx = parseInt(col);
+    for (let i = 0; i < tb; i++) {
+        if (shouldStopProcessing) { headers = preProcessingState.headers; workbookData = preProcessingState.data; cellColors = preProcessingState.colors; modifiedCells = preProcessingState.modifiedCells; removeProgressMessage(); addChatMessage('system', t('processingCancelled')); renderTable(); return; }
+        const start = i * bs, end = Math.min(start + bs, workbookData.length);
+        const bd = workbookData.slice(start, end);
+        updateProgressMessage(t('processingBatch', { current: i+1, total: tb, start: start+1, end }));
         
-        // Check for consistent multiplication pattern
-        const multipliers = colChanges.map(c => c.isMultiplication).filter(m => m !== null);
-        if (multipliers.length > 0) {
-            const avgMultiplier = multipliers.reduce((a, b) => a + b, 0) / multipliers.length;
-            const isConsistent = multipliers.every(m => Math.abs(m - avgMultiplier) < 0.001);
-            
-            if (isConsistent) {
-                result.forEach((row, idx) => {
-                    const val = parseFloat(row[colIdx]);
-                    if (!isNaN(val)) {
-                        row[colIdx] = String(val * avgMultiplier);
+        try {
+            const res = await callAI(headers, bd, prompt, i+1, tb);
+            if (shouldStopProcessing) continue;
+            if (res.type === 'modification' && res.data) {
+                res.data.forEach((row, ri) => {
+                    const ti = start + ri;
+                    if (ti < workbookData.length) {
+                        row.forEach((val, ci) => {
+                            if (ci < headers.length && String(workbookData[ti][ci]) !== String(val)) { workbookData[ti][ci] = val; am.add(`${ti}-${ci}`); }
+                        });
                     }
                 });
-                return;
             }
-        }
-        
-        // Check for consistent addition pattern
-        const additions = colChanges.map(c => c.isAddition).filter(a => a !== null);
-        if (additions.length > 0) {
-            const avgAddition = additions.reduce((a, b) => a + b, 0) / additions.length;
-            const isConsistent = additions.every(a => Math.abs(a - avgAddition) < 0.001);
-            
-            if (isConsistent) {
-                result.forEach((row, idx) => {
-                    const val = parseFloat(row[colIdx]);
-                    if (!isNaN(val)) {
-                        row[colIdx] = String(val + avgAddition);
-                    }
-                });
-                return;
-            }
-        }
-        
-        // For non-numeric changes, apply directly if within partial data range
-        colChanges.forEach(ch => {
-            if (ch.row < result.length) {
-                result[ch.row][colIdx] = ch.newVal;
-            }
-        });
-    });
-    
-    return result;
+            else if (res.type === 'question' && i === 0) { removeProgressMessage(); addChatMessage('ai', res.answer); history.pop(); return; }
+            if (i < tb - 1) await new Promise(r => setTimeout(r, 300));
+        } catch (be) { addChatMessage('system', `⚠️ Batch ${i+1} failed: ${be.message}`); }
+    }
+    removeProgressMessage();
+    modifiedCells = am; lastAIChange = { before: { headers: oh, data: od }, after: { headers, data: workbookData } };
+    renderTable(); addChatMessage('ai', t('batchesComplete', { batches: tb, cells: am.size }));
 }
 
-// Standard undo
-undoBtn.addEventListener('click', () => {
-    if (history.length === 0) return;
-    
-    const previous = history.pop();
-    headers = previous.headers;
-    workbookData = previous.data;
-    cellColors = previous.colors;
-    modifiedCells = previous.modifiedCells || new Set();
-    renderTable();
-    addChatMessage('system', t('undidChange'));
-    updateButtonStates();
-});
+async function processSingleRequest(prompt) {
+    addChatMessage('ai', t('processing'));
+    const res = await callAI(headers, workbookData, prompt, 1, 1);
+    if (shouldStopProcessing) { if (preProcessingState) { headers = preProcessingState.headers; workbookData = preProcessingState.data; cellColors = preProcessingState.colors; modifiedCells = preProcessingState.modifiedCells; } removeProgressMessage(); addChatMessage('system', t('processingCancelled')); renderTable(); return; }
+    removeProgressMessage();
+    if (res.type === 'question') { addChatMessage('ai', res.answer); history.pop(); }
+    else if (res.type === 'modification' && res.headers && res.data) {
+        const oh = [...headers], od = workbookData.map(r => [...r]);
+        const mr = mergeAIChangesIntoOriginal(od, res.data, oh, res.headers, prompt);
+        headers = mr.headers; workbookData = mr.data;
+        if (workbookData.length < od.length && !userAskedToDeleteRows(prompt)) { workbookData = od.map(r => [...r]); addChatMessage('system', '🛡️ Emergency protection activated.'); }
+        const { changes, modified } = detectChanges(oh, od, headers, workbookData);
+        modifiedCells = modified; lastAIChange = { before: { headers: oh, data: od }, after: { headers, data: workbookData } };
+        renderTable();
+        if (mr.message) addChatMessage('system', mr.message);
+        addChatMessage('ai', `✓ ${res.description || changes.join(', ') || 'Changes applied'}`);
+    } else if (res.headers && res.data) { headers = res.headers; workbookData = res.data; renderTable(); addChatMessage('ai', t('changesApplied')); }
+    else throw new Error('Invalid response');
+}
 
-// AI History Modal
-aiHistoryBtn.addEventListener('click', () => {
-    renderAIHistory();
-    aiHistoryModal.classList.remove('hidden');
-});
+async function callAI(h, d, p, bn, tb) {
+    const sp = `You are a helpful assistant for spreadsheet data. Determine if user is ASKING A QUESTION or REQUESTING A MODIFICATION.
+For QUESTIONS: {"type": "question", "answer": "..."}
+For MODIFICATIONS: {"type": "modification", "headers": [...], "data": [[...]], "description": "..."}
+CRITICAL: Return ALL rows, NEVER omit unless explicitly asked to delete.${tb > 1 ? ` This is batch ${bn}/${tb}.` : ''} Respond with valid JSON only.`;
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: sp }, { role: 'user', content: `Headers: ${JSON.stringify(h)}\nData (${d.length} rows): ${JSON.stringify(d)}\n\nRequest: ${p}` }], temperature: 0.3, max_tokens: 8000 })
+    });
+    if (!resp.ok) { const e = await resp.json().catch(()=>({})); throw new Error(`API error: ${resp.status} - ${e.error?.message || 'Unknown'}`); }
+    const r = await resp.json(), c = r.choices[0].message.content.trim(), m = c.match(/\{[\s\S]*\}/);
+    return m ? JSON.parse(m[0]) : { type: 'question', answer: c };
+}
 
-closeAiHistoryModal.addEventListener('click', () => {
-    aiHistoryModal.classList.add('hidden');
-});
+function calculateDynamicBatchSize() {
+    const cols = headers.length;
+    let tc = 0, cc = 0;
+    for (let i = 0; i < Math.min(50, workbookData.length); i++) for (let j = 0; j < cols; j++) { if (workbookData[i]?.[j] != null) { tc += String(workbookData[i][j]).length; cc++; } }
+    const acs = cc ? tc / cc : 10, ars = acs * cols;
+    let bs = Math.floor(12000 / (ars * 2));
+    bs = Math.max(10, Math.min(200, bs));
+    if (cols > 30) bs = Math.min(bs, 30); else if (cols > 20) bs = Math.min(bs, 50); else if (cols > 10) bs = Math.min(bs, 80);
+    return bs;
+}
 
-aiHistoryModal.addEventListener('click', (e) => {
-    if (e.target === aiHistoryModal) {
-        aiHistoryModal.classList.add('hidden');
-    }
-});
+function updateProgressMessage(txt) {
+    const msgs = chatMessages.querySelectorAll('.message.ai'), last = msgs[msgs.length - 1];
+    if (last && (last.textContent.includes('Processing') || last.textContent.includes('batch'))) last.textContent = txt;
+    else addChatMessage('ai', txt);
+}
 
-function renderAIHistory() {
-    aiHistoryList.innerHTML = '';
-    
-    if (aiHistory.length === 0) {
-        aiHistoryList.innerHTML = '<p class="no-history">' + t('noAIHistory') + '</p>';
-        return;
-    }
-    
-    // Reverse to show most recent first
-    [...aiHistory].reverse().forEach((entry, idx) => {
-        const realIdx = aiHistory.length - 1 - idx;
-        const item = document.createElement('div');
-        item.className = 'ai-history-item' + (entry.isReverted ? ' reverted' : '');
-        
-        const header = document.createElement('div');
-        header.className = 'ai-history-header';
-        
-        const timestamp = document.createElement('span');
-        timestamp.className = 'ai-history-timestamp';
-        timestamp.textContent = entry.timestamp;
-        header.appendChild(timestamp);
-        
-        const status = document.createElement('span');
-        status.className = 'ai-history-status';
-        status.textContent = entry.isReverted ? '↩️ Reverted' : '✓ Applied';
-        header.appendChild(status);
-        
-        item.appendChild(header);
-        
-        const prompt = document.createElement('div');
-        prompt.className = 'ai-history-prompt';
-        prompt.textContent = `"${entry.prompt}"`;
-        item.appendChild(prompt);
-        
-        const description = document.createElement('div');
-        description.className = 'ai-history-description';
-        description.textContent = entry.description;
-        item.appendChild(description);
-        
-        const actions = document.createElement('div');
-        actions.className = 'ai-history-actions';
-        
-        if (!entry.isReverted) {
-            const revertBtn = document.createElement('button');
-            revertBtn.className = 'ai-history-revert';
-            revertBtn.textContent = t('revertChange');
-            revertBtn.onclick = () => revertAIChange(realIdx);
-            actions.appendChild(revertBtn);
-        } else {
-            const reapplyBtn = document.createElement('button');
-            reapplyBtn.className = 'ai-history-reapply';
-            reapplyBtn.textContent = t('reapplyChange');
-            reapplyBtn.onclick = () => reapplyAIChange(realIdx);
-            actions.appendChild(reapplyBtn);
-        }
-        
-        const viewBtn = document.createElement('button');
-        viewBtn.className = 'ai-history-view';
-        viewBtn.textContent = t('viewDiff');
-        viewBtn.onclick = () => viewAIDiff(realIdx);
-        actions.appendChild(viewBtn);
-        
-        item.appendChild(actions);
-        aiHistoryList.appendChild(item);
+function removeProgressMessage() {
+    const msgs = chatMessages.querySelectorAll('.message.ai'), last = msgs[msgs.length - 1];
+    if (last && (last.textContent === t('processing') || last.textContent.includes('Processing') || last.textContent.includes('batch'))) last.remove();
+}
+// =====================================
+// HELP MODAL
+// =====================================
+const helpBtn = document.getElementById('helpBtn');
+const helpModal = document.getElementById('helpModal');
+const closeHelpModal = document.getElementById('closeHelpModal');
+
+if (helpBtn) {
+    helpBtn.addEventListener('click', () => {
+        helpModal.classList.remove('hidden');
     });
 }
 
-function revertAIChange(index) {
-    const entry = aiHistory[index];
-    if (!entry || entry.isReverted) return;
-    
-    saveState();
-    
-    // Calculate the changes this entry made
-    const beforeData = entry.beforeData;
-    const afterData = entry.afterData;
-    const beforeHeaders = entry.beforeHeaders;
-    const afterHeaders = entry.afterHeaders;
-    
-    // We need to "subtract" this change from current data
-    // This is complex because subsequent changes may have modified the same cells
-    // Simple approach: revert cells that were changed by this AI call AND haven't been changed since
-    
-    for (let r = 0; r < Math.min(beforeData.length, workbookData.length); r++) {
-        for (let c = 0; c < Math.min(beforeHeaders.length, headers.length); c++) {
-            const beforeVal = String(beforeData[r]?.[c] ?? '');
-            const afterVal = String(afterData[r]?.[c] ?? '');
-            const currentVal = String(workbookData[r]?.[c] ?? '');
-            
-            // If this cell was changed by this AI call, and current value matches the AI's change
-            if (beforeVal !== afterVal && currentVal === afterVal) {
-                workbookData[r][c] = beforeData[r][c];
-            }
-        }
-    }
-    
-    entry.isReverted = true;
-    
-    renderTable();
-    renderAIHistory();
-    addChatMessage('system', t('revertedAIChange', { description: entry.description }));
-    updateButtonStates();
-}
-
-function reapplyAIChange(index) {
-    const entry = aiHistory[index];
-    if (!entry || !entry.isReverted) return;
-    
-    saveState();
-    
-    const beforeData = entry.beforeData;
-    const afterData = entry.afterData;
-    const beforeHeaders = entry.beforeHeaders;
-    const afterHeaders = entry.afterHeaders;
-    
-    // Re-apply the changes
-    for (let r = 0; r < Math.min(afterData.length, workbookData.length); r++) {
-        for (let c = 0; c < Math.min(afterHeaders.length, headers.length); c++) {
-            const beforeVal = String(beforeData[r]?.[c] ?? '');
-            const afterVal = String(afterData[r]?.[c] ?? '');
-            const currentVal = String(workbookData[r]?.[c] ?? '');
-            
-            // If this cell was changed by this AI call, and current value matches the original
-            if (beforeVal !== afterVal && currentVal === beforeVal) {
-                workbookData[r][c] = afterData[r][c];
-            }
-        }
-    }
-    
-    entry.isReverted = false;
-    
-    renderTable();
-    renderAIHistory();
-    addChatMessage('system', t('reappliedAIChange', { description: entry.description }));
-    updateButtonStates();
-}
-
-function viewAIDiff(index) {
-    const entry = aiHistory[index];
-    if (!entry) return;
-    
-    renderCompareTable('before', entry.beforeHeaders, entry.beforeData);
-    renderCompareTable('after', entry.afterHeaders, entry.afterData, entry.beforeHeaders, entry.beforeData);
-    
-    aiHistoryModal.classList.add('hidden');
-    compareModal.classList.remove('hidden');
-}
-
-addRowBtn.addEventListener('click', () => {
-    saveState();
-    const newRow = new Array(headers.length).fill('');
-    workbookData.push(newRow);
-    renderTable();
-    addChatMessage('system', t('addedRow'));
-});
-
-addColBtn.addEventListener('click', () => {
-    const colName = prompt(t('enterColumnName'));
-    if (!colName) return;
-    
-    saveState();
-    headers.push(colName);
-    workbookData.forEach(row => row.push(''));
-    renderTable();
-    addChatMessage('system', t('addedColumn', { name: colName }));
-});
-
-// Compare modal functionality
-compareBtn.addEventListener('click', () => {
-    if (history.length === 0) {
-        addChatMessage('system', t('noChangesToCompare'));
-        return;
-    }
-    
-    const beforeState = history[history.length - 1];
-    
-    renderCompareTable('before', beforeState.headers, beforeState.data);
-    renderCompareTable('after', headers, workbookData, beforeState.headers, beforeState.data);
-    
-    compareModal.classList.remove('hidden');
-});
-
-closeCompareModal.addEventListener('click', () => {
-    compareModal.classList.add('hidden');
-});
-
-compareModal.addEventListener('click', (e) => {
-    if (e.target === compareModal) {
-        compareModal.classList.add('hidden');
-    }
-});
-
-function renderCompareTable(prefix, tableHeaders, tableData, compareHeaders = null, compareData = null) {
-    const thead = document.getElementById(`${prefix}TableHead`);
-    const tbody = document.getElementById(`${prefix}TableBody`);
-    
-    thead.innerHTML = '';
-    tbody.innerHTML = '';
-    
-    const headerRow = document.createElement('tr');
-    const cornerCell = document.createElement('th');
-    cornerCell.className = 'row-header';
-    cornerCell.textContent = '#';
-    headerRow.appendChild(cornerCell);
-    
-    tableHeaders.forEach((header, i) => {
-        const th = document.createElement('th');
-        th.textContent = header || `Col ${i + 1}`;
-        
-        if (compareHeaders && compareHeaders[i] !== header) {
-            th.classList.add('changed');
-        }
-        headerRow.appendChild(th);
+if (closeHelpModal) {
+    closeHelpModal.addEventListener('click', () => {
+        helpModal.classList.add('hidden');
     });
-    thead.appendChild(headerRow);
-    
-    tableData.forEach((row, rowIndex) => {
-        const tr = document.createElement('tr');
-        
-        const rowHeader = document.createElement('td');
-        rowHeader.className = 'row-header';
-        rowHeader.textContent = rowIndex + 1;
-        tr.appendChild(rowHeader);
-        
-        tableHeaders.forEach((_, colIndex) => {
-            const td = document.createElement('td');
-            const value = row[colIndex] !== undefined ? row[colIndex] : '';
-            td.textContent = value;
-            
-            if (compareData) {
-                const compareValue = compareData[rowIndex] && compareData[rowIndex][colIndex] !== undefined 
-                    ? compareData[rowIndex][colIndex] : '';
-                if (String(value) !== String(compareValue)) {
-                    td.classList.add('changed');
-                }
-            }
-            
-            tr.appendChild(td);
-        });
+}
+
+if (helpModal) {
+    helpModal.addEventListener('click', (e) => {
+        if (e.target === helpModal) helpModal.classList.add('hidden');
+    });
+}
+
+// =====================================
+// UI BUTTON HANDLERS
+// =====================================
+undoBtn.addEventListener('click', () => { 
+    if (!history.length) return; 
+    const p = history.pop(); 
+    headers = p.headers; 
+    workbookData = p.data; 
+    cellColors = p.colors; 
+    modifiedCells = p.modifiedCells || new Set(); 
+    renderTable(); 
+    addChatMessage('system', t('undidChange')); 
+    updateButtonStates(); 
+});
+
+addRowBtn.addEventListener('click', () => { 
+    saveState('addRow'); 
+    workbookData.push(new Array(headers.length).fill('')); 
+    renderTable(); 
+    addChatMessage('system', t('addedRow')); 
+});
+
+addColBtn.addEventListener('click', () => { 
+    const n = prompt(t('enterColumnName')); 
+    if (!n) return; 
+    saveState('addColumn'); 
+    headers.push(n); 
+    workbookData.forEach(r => r.push('')); 
+    renderTable(); 
+    addChatMessage('system', t('addedColumn', { name: n })); 
+});
+
+// =====================================
+// COMPARE MODAL
+// =====================================
+compareBtn.addEventListener('click', () => { 
+    if (!history.length) { addChatMessage('system', t('noChangesToCompare')); return; } 
+    const bs = history[history.length - 1]; 
+    renderCompareTable('before', bs.headers, bs.data); 
+    renderCompareTable('after', headers, workbookData, bs.headers, bs.data); 
+    compareModal.classList.remove('hidden'); 
+});
+
+closeCompareModal.addEventListener('click', () => compareModal.classList.add('hidden'));
+compareModal.addEventListener('click', (e) => { if (e.target === compareModal) compareModal.classList.add('hidden'); });
+
+function renderCompareTable(pf, th, td, ch = null, cd = null) {
+    const thead = document.getElementById(`${pf}TableHead`), tbody = document.getElementById(`${pf}TableBody`);
+    thead.innerHTML = ''; tbody.innerHTML = '';
+    const hr = document.createElement('tr'), cc = document.createElement('th'); cc.className = 'row-header'; cc.textContent = '#'; hr.appendChild(cc);
+    th.forEach((h, i) => { const t = document.createElement('th'); t.textContent = h || `Col ${i+1}`; if (ch && ch[i] !== h) t.classList.add('changed'); hr.appendChild(t); });
+    thead.appendChild(hr);
+    td.forEach((r, ri) => {
+        const tr = document.createElement('tr'), rh = document.createElement('td'); rh.className = 'row-header'; rh.textContent = ri + 1; tr.appendChild(rh);
+        th.forEach((_, ci) => { const t = document.createElement('td'), v = r[ci] ?? ''; t.textContent = v; if (cd && String(v) !== String(cd[ri]?.[ci] ?? '')) t.classList.add('changed'); tr.appendChild(t); });
         tbody.appendChild(tr);
     });
 }
 
-// Enhanced download with format selection
+// =====================================
+// DOWNLOAD
+// =====================================
 downloadBtn.addEventListener('click', () => {
-    const format = exportFormatSelect.value;
-    const exportName = originalFileName || 'spreadsheet';
-    
-    switch (format) {
-        case 'xlsx':
-            exportXLSX(exportName);
-            break;
-        case 'xls':
-            exportXLS(exportName);
-            break;
-        case 'csv':
-            exportCSV(exportName);
-            break;
-        case 'tsv':
-            exportTSV(exportName);
-            break;
-        case 'json':
-            exportJSON(exportName);
-            break;
-        case 'xml':
-            exportXML(exportName);
-            break;
-        case 'html':
-            exportHTML(exportName);
-            break;
-        case 'ods':
-            exportODS(exportName);
-            break;
-        default:
-            exportXLSX(exportName);
-    }
-    
+    const fmt = exportFormat?.value || 'xlsx';
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
+    for (let c in cellColors) if (ws[c]) ws[c].s = { fgColor: { rgb: cellColors[c].slice(1) } };
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, `${originalFileName || 'spreadsheet'}_modified.${fmt}`, fmt === 'csv' ? { bookType: 'csv' } : fmt === 'xls' ? { bookType: 'xls' } : {});
     addChatMessage('system', t('downloaded'));
 });
 
-function exportXLSX(filename) {
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
-    
-    for (let cell in cellColors) {
-        if (ws[cell]) {
-            ws[cell].s = {fgColor: {rgb: cellColors[cell].slice(1)}};
-        }
-    }
-    
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-    XLSX.writeFile(wb, `${filename}_modified.xlsx`);
-}
+// =====================================
+// AI PROMPT ENTER KEY
+// =====================================
+aiPrompt.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiButton.click(); } });
 
-function exportXLS(filename) {
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-    XLSX.writeFile(wb, `${filename}_modified.xls`, { bookType: 'xls' });
-}
-
-function exportCSV(filename) {
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
-    const csv = XLSX.utils.sheet_to_csv(ws);
-    downloadText(csv, `${filename}_modified.csv`, 'text/csv');
-}
-
-function exportTSV(filename) {
-    const lines = [headers.join('\t')];
-    workbookData.forEach(row => {
-        lines.push(row.join('\t'));
-    });
-    downloadText(lines.join('\n'), `${filename}_modified.tsv`, 'text/tab-separated-values');
-}
-
-function exportJSON(filename) {
-    const data = workbookData.map(row => {
-        const obj = {};
-        headers.forEach((h, i) => {
-            obj[h || `Column${i+1}`] = row[i];
-        });
-        return obj;
-    });
-    downloadText(JSON.stringify(data, null, 2), `${filename}_modified.json`, 'application/json');
-}
-
-function exportXML(filename) {
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<data>\n';
-    workbookData.forEach((row, rowIdx) => {
-        xml += '  <record>\n';
-        headers.forEach((h, i) => {
-            const tagName = (h || `column${i+1}`).replace(/[^a-zA-Z0-9_]/g, '_');
-            const value = escapeXML(String(row[i] ?? ''));
-            xml += `    <${tagName}>${value}</${tagName}>\n`;
-        });
-        xml += '  </record>\n';
-    });
-    xml += '</data>';
-    downloadText(xml, `${filename}_modified.xml`, 'application/xml');
-}
-
-function escapeXML(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-}
-
-function exportHTML(filename) {
-    let html = `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>${filename}</title>
-    <style>
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #2d3e50; color: white; }
-        tr:nth-child(even) { background-color: #f2f2f2; }
-    </style>
-</head>
-<body>
-    <table>
-        <thead>
-            <tr>${headers.map(h => `<th>${escapeHTML(h)}</th>`).join('')}</tr>
-        </thead>
-        <tbody>
-`;
-    workbookData.forEach(row => {
-        html += `            <tr>${row.map(cell => `<td>${escapeHTML(String(cell ?? ''))}</td>`).join('')}</tr>\n`;
-    });
-    html += `        </tbody>
-    </table>
-</body>
-</html>`;
-    downloadText(html, `${filename}_modified.html`, 'text/html');
-}
-
-function escapeHTML(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-
-function exportODS(filename) {
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-    XLSX.writeFile(wb, `${filename}_modified.ods`, { bookType: 'ods' });
-}
-
-function downloadText(content, filename, mimeType) {
-    const blob = new Blob([content], { type: mimeType + ';charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-aiPrompt.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        aiButton.click();
-    }
-});
-
+// =====================================
+// INITIALIZE
+// =====================================
 updateButtonStates();

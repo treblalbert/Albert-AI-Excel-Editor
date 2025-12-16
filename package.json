@@ -1,7 +1,7 @@
 {
   "name": "alberts-ai-excel-editor",
-  "version": "2.0.0",
-  "description": "AI-powered Excel Editor by Albert - Enhanced with multi-format support, granular AI undo, and Excel-like cell controls",
+  "version": "2.0.0-alpha",
+  "description": "AI-powered Excel Editor by Albert",
   "main": "main.js",
   "author": "Albert",
   "license": "MIT",

@@ -8,87 +8,91 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="header-content">
-                <h1 id="mainTitle">🤖 Albert's AI Excel Editor</h1>
-                <p id="subtitle">Intelligent spreadsheet editing powered by AI</p>
+    <div class="app-wrapper">
+        <div class="container">
+            <div class="header">
+                <div class="header-content">
+                    <h1 id="mainTitle">Albert's AI Excel Editor</h1>
+                </div>
+                <div class="header-controls">
+                    <div class="language-selector">
+                        <button class="lang-btn active" data-lang="en">English</button>
+                        <button class="lang-btn" data-lang="es">Español</button>
+                        <button class="lang-btn" data-lang="ca">Català</button>
+                    </div>
+                    <button class="theme-toggle" id="themeToggle">
+                        <span class="theme-toggle-icon" id="themeIcon">🌙</span>
+                        <span id="themeText">Dark</span>
+                    </button>
+                    <button class="help-btn" id="helpBtn">
+                        <span class="help-icon">?</span>
+                        <span id="helpText">Help</span>
+                    </button>
+                </div>
             </div>
-            <div class="language-selector">
-                <button class="lang-btn active" data-lang="en">English</button>
-                <button class="lang-btn" data-lang="es">Español</button>
-                <button class="lang-btn" data-lang="ca">Català</button>
-            </div>
-        </div>
 
-        <div id="apiSetup" class="api-setup">
-            <h2 id="welcomeTitle">Welcome! Let's Get Started</h2>
-            <p id="welcomeText">First, load a text file containing your OpenAI API key to unlock AI-powered features.</p>
-            <div class="control-group">
-                <input type="file" id="apiKeyFile" accept=".txt">
-            </div>
-            <p id="securityNote" style="margin-top: 20px; font-size: 0.9em; color: #666;">
-                Your API key is stored securely in your browser and never leaves your device.
-            </p>
-        </div>
-
-        <div id="mainApp" class="hidden">
-            <div class="controls">
+            <div id="apiSetup" class="api-setup">
+                <h2 id="welcomeTitle">Welcome! Let's Get Started</h2>
+                <p id="welcomeText">First, load a text file containing your OpenAI API key to unlock AI-powered features.</p>
                 <div class="control-group">
-                    <label id="loadFileLabel">Load File (.xlsx, .xls, .xlsm, .csv, .tsv, .json, .xml, .ods)</label>
-                    <input type="file" id="excelFile" accept=".xlsx,.xls,.xlsm,.xlsb,.csv,.tsv,.txt,.json,.xml,.ods">
+                    <input type="file" id="apiKeyFile" accept=".txt">
                 </div>
-                <div class="options-row">
-                    <label class="toggle-option">
-                        <input type="checkbox" id="highlightToggle">
-                        <span class="toggle-slider"></span>
-                        <span id="highlightLabel">Highlight AI changes</span>
-                    </label>
-                </div>
+                <p id="securityNote" style="margin-top: 20px; font-size: 0.9em; color: var(--text-light);">
+                    Your API key is stored securely in your browser and never leaves your device.
+                </p>
             </div>
 
-            <div id="status"></div>
-
-            <div class="main-content">
-                <div class="table-section">
-                    <div class="table-controls">
-                        <button id="addRowBtn" disabled><span id="addRowText">➕ Add Row</span></button>
-                        <button id="addColBtn" disabled><span id="addColText">➕ Add Column</span></button>
-                        <button id="compareBtn" class="compare-btn" disabled><span id="compareText">🔄 Compare Changes</span></button>
-                        <button id="aiHistoryBtn" class="ai-history-btn" disabled><span id="aiHistoryText">📜 AI History</span></button>
-                        <div class="export-group">
-                            <select id="exportFormat" class="export-select">
-                                <option value="xlsx">Excel (.xlsx)</option>
-                                <option value="xls">Excel 97-2003 (.xls)</option>
-                                <option value="csv">CSV (.csv)</option>
-                                <option value="tsv">TSV (.tsv)</option>
-                                <option value="json">JSON (.json)</option>
-                                <option value="xml">XML (.xml)</option>
-                                <option value="html">HTML (.html)</option>
-                                <option value="ods">OpenDocument (.ods)</option>
+            <div id="mainApp" class="hidden">
+                <div class="controls">
+                    <div class="control-group">
+                        <label id="loadFileLabel">Load Excel File (.xlsx, .xls, .csv)</label>
+                        <input type="file" id="excelFile" accept=".xlsx,.xls,.csv">
+                    </div>
+                    <div class="options-row">
+                        <label class="toggle-option">
+                            <input type="checkbox" id="highlightToggle">
+                            <span class="toggle-slider"></span>
+                            <span id="highlightLabel">Highlight AI changes</span>
+                        </label>
+                        <div class="export-format-group">
+                            <label id="exportFormatLabel">Format:</label>
+                            <select id="exportFormat" class="export-format-select">
+                                <option value="xlsx" selected>.xlsx</option>
+                                <option value="xls">.xls</option>
+                                <option value="csv">.csv</option>
                             </select>
-                            <button id="downloadBtn" disabled><span id="downloadText">⬇️ Download</span></button>
                         </div>
                     </div>
-                    <div class="keyboard-shortcuts-hint">
-                        <span>💡 <span id="shortcutsHint">Ctrl+C/X/V: Copy/Cut/Paste | Ctrl+D: Fill Down | Ctrl+R: Fill Right | Del: Clear | Drag corner to fill</span></span>
-                    </div>
-                    <div class="table-wrapper">
-                        <table id="dataTable">
-                            <thead id="tableHead"></thead>
-                            <tbody id="tableBody"></tbody>
-                        </table>
-                    </div>
                 </div>
 
-                <div class="chat-section">
-                    <div class="chat-header"><span id="chatHeaderText">💬 AI Assistant</span></div>
-                    <div class="chat-messages" id="chatMessages"></div>
-                    <div class="chat-input-area">
-                        <textarea id="aiPrompt" disabled></textarea>
-                        <div class="chat-buttons">
-                            <button id="aiButton" disabled><span id="sendText">Send ✨</span></button>
-                            <button id="undoBtn" class="undo-btn" disabled><span id="undoText">↶ Undo</span></button>
+                <div id="status"></div>
+
+                <div class="main-content">
+                    <div class="table-section">
+                        <div class="table-controls">
+                            <button id="addRowBtn" disabled><span id="addRowText">Add Row</span></button>
+                            <button id="addColBtn" disabled><span id="addColText">Add Column</span></button>
+                            <button id="compareBtn" class="compare-btn" disabled><span id="compareText">Compare Changes</span></button>
+                            <button id="downloadBtn" disabled><span id="downloadText">Download</span></button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="dataTable">
+                                <thead id="tableHead"></thead>
+                                <tbody id="tableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="chat-section">
+                        <div class="chat-header"><span id="chatHeaderText">AI Assistant</span></div>
+                        <div class="chat-messages" id="chatMessages"></div>
+                        <div class="chat-input-area">
+                            <textarea id="aiPrompt" disabled></textarea>
+                            <div class="chat-buttons">
+                                <button id="aiButton" disabled><span id="sendText">Send</span></button>
+                                <button id="stopBtn" class="stop-btn hidden" disabled><span id="stopText">Stop</span></button>
+                                <button id="undoBtn" class="undo-btn" disabled><span id="undoText">Undo</span></button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -115,7 +119,7 @@
                         </div>
                     </div>
                     <div class="compare-panel">
-                        <h4 id="afterLabel">After</h4>
+                        <h4 id="afterLabel">After (Current)</h4>
                         <div class="compare-table-wrapper">
                             <table id="afterTable">
                                 <thead id="afterTableHead"></thead>
@@ -128,18 +132,61 @@
         </div>
     </div>
 
-    <!-- AI History Modal -->
-    <div id="aiHistoryModal" class="modal hidden">
-        <div class="modal-content ai-history-modal">
+    <!-- Help Modal -->
+    <div id="helpModal" class="modal hidden">
+        <div class="modal-content help-modal-content">
             <div class="modal-header">
-                <h3 id="aiHistoryModalTitle">📜 AI Change History</h3>
-                <button class="modal-close" id="closeAiHistoryModal">&times;</button>
+                <h3 id="helpModalTitle">Help & Keyboard Shortcuts</h3>
+                <button class="modal-close" id="closeHelpModal">&times;</button>
             </div>
-            <div class="modal-body">
-                <p id="aiHistoryDescription" class="ai-history-description">
-                    Manage individual AI changes. You can revert specific changes while keeping others.
-                </p>
-                <div id="aiHistoryList" class="ai-history-list"></div>
+            <div class="modal-body help-modal-body">
+                <div class="help-section">
+                    <h4 id="helpKeyboardTitle">⌨️ Keyboard Shortcuts</h4>
+                    <div class="help-grid">
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>Z</kbd><span id="helpUndo">Undo last action</span></div>
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>C</kbd><span id="helpCopy">Copy selected cells</span></div>
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>X</kbd><span id="helpCut">Cut selected cells</span></div>
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>V</kbd><span id="helpPaste">Paste cells</span></div>
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>A</kbd><span id="helpSelectAll">Select all cells</span></div>
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>F</kbd><span id="helpFind">Find/Search</span></div>
+                        <div class="help-item"><kbd>Ctrl</kbd>+<kbd>H</kbd><span id="helpReplace">Find & Replace</span></div>
+                        <div class="help-item"><kbd>Delete</kbd><span id="helpDelete">Clear selected cells</span></div>
+                        <div class="help-item"><kbd>Enter</kbd><span id="helpEnter">Edit cell / Move down</span></div>
+                        <div class="help-item"><kbd>Tab</kbd><span id="helpTab">Move to next cell</span></div>
+                        <div class="help-item"><kbd>Esc</kbd><span id="helpEscape">Cancel / Close dialogs</span></div>
+                        <div class="help-item"><kbd>Arrow Keys</kbd><span id="helpArrows">Navigate cells</span></div>
+                    </div>
+                </div>
+                <div class="help-section">
+                    <h4 id="helpMouseTitle">🖱️ Mouse Actions</h4>
+                    <div class="help-list">
+                        <div class="help-list-item"><strong id="helpClickLabel">Click:</strong> <span id="helpClick">Select a cell</span></div>
+                        <div class="help-list-item"><strong id="helpDragLabel">Click + Drag:</strong> <span id="helpDrag">Select multiple cells</span></div>
+                        <div class="help-list-item"><strong id="helpShiftClickLabel">Shift + Click:</strong> <span id="helpShiftClick">Extend selection</span></div>
+                        <div class="help-list-item"><strong id="helpDoubleClickLabel">Double Click:</strong> <span id="helpDoubleClick">Edit cell content</span></div>
+                        <div class="help-list-item"><strong id="helpFillHandleLabel">Drag Fill Handle:</strong> <span id="helpFillHandle">Auto-fill cells (bottom-right corner square)</span></div>
+                        <div class="help-list-item"><strong id="helpResizeLabel">Drag Column Border:</strong> <span id="helpResize">Resize column width</span></div>
+                    </div>
+                </div>
+                <div class="help-section">
+                    <h4 id="helpFeaturesTitle">✨ Features</h4>
+                    <div class="help-list">
+                        <div class="help-list-item"><strong id="helpFilterLabel">Column Filters:</strong> <span id="helpFilter">Click ▼ on headers to filter by values, text, or numbers</span></div>
+                        <div class="help-list-item"><strong id="helpAILabel">AI Assistant:</strong> <span id="helpAI">Ask questions or request modifications in natural language</span></div>
+                        <div class="help-list-item"><strong id="helpCompareLabel">Compare Changes:</strong> <span id="helpCompare">View before/after comparison of your data</span></div>
+                        <div class="help-list-item"><strong id="helpHighlightLabel">Highlight Changes:</strong> <span id="helpHighlight">Toggle to see AI-modified cells</span></div>
+                        <div class="help-list-item"><strong id="helpExportLabel">Export Formats:</strong> <span id="helpExport">Download as .xlsx, .xls, or .csv</span></div>
+                    </div>
+                </div>
+                <div class="help-section">
+                    <h4 id="helpAITipsTitle">💡 AI Tips</h4>
+                    <div class="help-tips">
+                        <p id="helpAITip1">• Ask questions: "What's the sum of column B?" or "How many rows have sales > 1000?"</p>
+                        <p id="helpAITip2">• Request modifications: "Add 10% to all prices" or "Convert names to uppercase"</p>
+                        <p id="helpAITip3">• Add data: "Add a new column called 'Total' with the sum of columns B and C"</p>
+                        <p id="helpAITip4">• For large datasets (100+ rows), processing is done in batches automatically</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
