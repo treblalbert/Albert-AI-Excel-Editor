@@ -1700,3 +1700,255 @@ td.fill-preview {
         padding: 6px 10px;
     }
 }
+
+/* =====================================
+   SAVE DIALOG STYLES
+   ===================================== */
+.save-dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(45, 62, 80, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1002;
+    backdrop-filter: blur(4px);
+}
+
+.save-dialog-overlay.hidden {
+    display: none;
+}
+
+[data-theme="dark"] .save-dialog-overlay {
+    background: rgba(0, 0, 0, 0.7);
+}
+
+.save-dialog {
+    background: var(--white);
+    border-radius: 12px;
+    width: 400px;
+    max-width: 90vw;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    animation: modalIn 0.3s ease;
+}
+
+.save-dialog-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    background: var(--primary-dark);
+    color: #ffffff;
+    border-radius: 12px 12px 0 0;
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.save-dialog-close {
+    background: transparent;
+    border: none;
+    color: #ffffff;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+
+.save-dialog-close:hover {
+    opacity: 1;
+    background: transparent;
+    transform: none;
+    box-shadow: none;
+}
+
+.save-dialog-content {
+    padding: 24px;
+}
+
+.save-dialog-row {
+    margin-bottom: 16px;
+}
+
+.save-dialog-row label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 500;
+    color: var(--text-dark);
+    font-size: 0.9rem;
+}
+
+.save-dialog-input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    background: var(--white);
+    color: var(--text-dark);
+    transition: border-color 0.2s;
+}
+
+.save-dialog-input:focus {
+    outline: none;
+    border-color: var(--primary-teal);
+}
+
+.save-dialog-select {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    background: var(--white);
+    color: var(--text-dark);
+    cursor: pointer;
+}
+
+.save-dialog-select:focus {
+    outline: none;
+    border-color: var(--primary-teal);
+}
+
+.save-dialog-buttons {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.save-dialog-btn {
+    flex: 1;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.save-dialog-btn.cancel {
+    background: var(--bg-section);
+    color: var(--text-dark);
+    border: 1px solid var(--border-light);
+}
+
+.save-dialog-btn.cancel:hover {
+    background: var(--bg-highlight);
+    transform: none;
+    box-shadow: none;
+}
+
+.save-dialog-btn.confirm {
+    background: var(--primary-teal);
+    color: #ffffff;
+    border: none;
+}
+
+.save-dialog-btn.confirm:hover {
+    background: var(--primary-teal-light);
+}
+
+.save-dialog-btn.save {
+    background: var(--accent-green);
+    color: #ffffff;
+    border: none;
+}
+
+.save-dialog-btn.save:hover {
+    background: var(--accent-green-dark);
+}
+
+.save-dialog-btn.exit {
+    background: var(--error-red);
+    color: #ffffff;
+    border: none;
+}
+
+.save-dialog-btn.exit:hover {
+    background: #b91c1c;
+}
+
+/* Exit Dialog specific */
+.exit-dialog {
+    width: 450px;
+}
+
+.exit-dialog-message {
+    font-size: 1rem;
+    color: var(--text-dark);
+    margin-bottom: 8px;
+    font-weight: 500;
+}
+
+.exit-dialog-submessage {
+    font-size: 0.85rem;
+    color: var(--warning-orange);
+    margin-bottom: 20px;
+}
+
+.exit-dialog-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.exit-dialog-buttons .save-dialog-btn {
+    flex: 1;
+    min-width: 120px;
+}
+
+/* =====================================
+   SORTABLE COLUMN HEADERS
+   ===================================== */
+.header-text.sortable {
+    cursor: pointer;
+    transition: color 0.2s;
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.header-text.sortable:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+th .header-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+/* Sort indicator styling */
+.header-text.sortable::after {
+    content: '';
+    margin-left: 4px;
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .save-dialog-btn.cancel {
+    background: var(--bg-highlight);
+    border-color: var(--border-light);
+}
+
+[data-theme="dark"] .save-dialog-btn.cancel:hover {
+    background: var(--primary-dark);
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+    .save-dialog {
+        width: 95vw;
+    }
+    
+    .exit-dialog-buttons {
+        flex-direction: column;
+    }
+    
+    .exit-dialog-buttons .save-dialog-btn {
+        width: 100%;
+    }
+}

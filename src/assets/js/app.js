@@ -163,6 +163,7 @@ function saveState(actionType = 'general') {
         actionType: actionType
     });
     if (history.length > 50) history.shift();
+    markUnsavedChanges();
     updateButtonStates();
 }
 
@@ -179,7 +180,19 @@ function renderTable() {
         const th = document.createElement('th');
         th.style.width = columnWidths[i] || '120px';
         const hc = document.createElement('div'); hc.className = 'header-content';
-        const ht = document.createElement('span'); ht.className = 'header-text'; ht.textContent = h || `Col ${i+1}`; hc.appendChild(ht);
+        
+        // Header text with sort indicator
+        const ht = document.createElement('span'); 
+        ht.className = 'header-text sortable'; 
+        let headerText = h || `Col ${i+1}`;
+        if (sortState.column === i) {
+            headerText += sortState.direction === 'asc' ? ' ↑' : ' ↓';
+        }
+        ht.textContent = headerText;
+        ht.onclick = (e) => { e.stopPropagation(); sortByColumn(i); };
+        ht.title = t('clickToSort') || 'Click to sort';
+        hc.appendChild(ht);
+        
         const fi = document.createElement('span'); fi.className = 'filter-icon' + (hasActiveFilter(i) ? ' active' : ''); fi.textContent = '▼';
         fi.onclick = (e) => { e.stopPropagation(); showFilterDropdown(e, i); }; hc.appendChild(fi);
         th.appendChild(hc);
@@ -389,6 +402,7 @@ document.addEventListener('keydown', (e) => {
     }
     if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); openSearch(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key === 'h') { e.preventDefault(); openReplace(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); openSaveDialog(); return; }
 });
 
 // =====================================
@@ -1067,8 +1081,8 @@ aiButton.addEventListener('click', async () => {
     saveState('ai');
     
     try {
-        if (workbookData.length > 100) await processLargeDataset(prompt);
-        else await processSingleRequest(prompt);
+        // Use smart optimized processing
+        await processOptimizedRequest(prompt);
     } catch (err) {
         removeProgressMessage();
         addChatMessage('system', t('apiError', { error: err.message }));
@@ -1086,6 +1100,433 @@ function userAskedToDeleteRows(prompt) {
     const deleteKeywords = ['delete', 'remove', 'eliminate', 'drop', 'erase', 'clear rows', 'empty rows', 'blank rows', 'eliminar', 'borrar', 'elimina', 'esborra'];
     const p = prompt.toLowerCase();
     return deleteKeywords.some(k => p.includes(k));
+}
+
+// =====================================
+// SMART DATA OPTIMIZATION
+// =====================================
+
+function detectRelevantColumns(prompt) {
+    const promptLower = prompt.toLowerCase();
+    const relevantCols = new Set();
+    
+    // Check for column letter references (A, B, C, etc.)
+    const colLetterMatch = promptLower.match(/\bcolumn\s*([a-z])\b|\bcol\s*([a-z])\b|\bcolumna\s*([a-z])\b/gi);
+    if (colLetterMatch) {
+        colLetterMatch.forEach(match => {
+            const letter = match.match(/[a-z]$/i)[0].toUpperCase();
+            const colIndex = letter.charCodeAt(0) - 65; // A=0, B=1, etc.
+            if (colIndex >= 0 && colIndex < headers.length) {
+                relevantCols.add(colIndex);
+            }
+        });
+    }
+    
+    // Check for column name references
+    headers.forEach((header, index) => {
+        if (!header) return;
+        const headerLower = header.toLowerCase();
+        const headerWords = headerLower.split(/[\s_-]+/);
+        
+        // Check if header name or any word in header appears in prompt
+        if (promptLower.includes(headerLower)) {
+            relevantCols.add(index);
+        } else {
+            // Check individual words (for multi-word headers)
+            headerWords.forEach(word => {
+                if (word.length > 2 && promptLower.includes(word)) {
+                    relevantCols.add(index);
+                }
+            });
+        }
+    });
+    
+    // Check for "all columns" or similar
+    if (promptLower.includes('all column') || promptLower.includes('every column') || 
+        promptLower.includes('todas las columna') || promptLower.includes('totes les column')) {
+        return null; // null means all columns
+    }
+    
+    return relevantCols.size > 0 ? Array.from(relevantCols) : null;
+}
+
+function detectRelevantRows(prompt) {
+    const promptLower = prompt.toLowerCase();
+    
+    // Check for "all rows" or similar
+    if (promptLower.includes('all row') || promptLower.includes('every row') || 
+        promptLower.includes('todas las fila') || promptLower.includes('totes les file')) {
+        return null; // null means all rows
+    }
+    
+    // Check for row range (e.g., "rows 1-10", "rows 1 to 50")
+    const rangeMatch = promptLower.match(/rows?\s*(\d+)\s*[-to]+\s*(\d+)/i);
+    if (rangeMatch) {
+        const start = parseInt(rangeMatch[1]) - 1; // Convert to 0-indexed
+        const end = parseInt(rangeMatch[2]);
+        return { type: 'range', start: Math.max(0, start), end: Math.min(end, workbookData.length) };
+    }
+    
+    // Check for "first N rows" or "last N rows"
+    const firstMatch = promptLower.match(/first\s*(\d+)\s*rows?|primer[ao]s?\s*(\d+)\s*fila/i);
+    if (firstMatch) {
+        const n = parseInt(firstMatch[1] || firstMatch[2]);
+        return { type: 'range', start: 0, end: Math.min(n, workbookData.length) };
+    }
+    
+    const lastMatch = promptLower.match(/last\s*(\d+)\s*rows?|[úu]ltim[ao]s?\s*(\d+)\s*fila/i);
+    if (lastMatch) {
+        const n = parseInt(lastMatch[1] || lastMatch[2]);
+        return { type: 'range', start: Math.max(0, workbookData.length - n), end: workbookData.length };
+    }
+    
+    // Check for conditional filters in prompt
+    // e.g., "where price > 100", "rows where name contains 'John'"
+    const conditionPatterns = [
+        /where\s+(\w+)\s*(>|<|>=|<=|=|==|!=|contains|equals?|is)\s*["']?([^"'\s]+)["']?/i,
+        /(?:filas?|rows?)\s+(?:donde|where|con|with)\s+(\w+)\s*(>|<|>=|<=|=|==|!=|contien[ea]|igual)\s*["']?([^"'\s]+)["']?/i
+    ];
+    
+    for (const pattern of conditionPatterns) {
+        const match = promptLower.match(pattern);
+        if (match) {
+            const columnName = match[1];
+            const operator = match[2];
+            const value = match[3];
+            
+            // Find column index
+            const colIndex = headers.findIndex(h => 
+                h && h.toLowerCase().includes(columnName.toLowerCase())
+            );
+            
+            if (colIndex !== -1) {
+                return { type: 'condition', column: colIndex, operator, value };
+            }
+        }
+    }
+    
+    return null; // null means all rows
+}
+
+function filterRowsByCondition(condition) {
+    if (!condition || condition.type === 'range') {
+        return condition;
+    }
+    
+    if (condition.type === 'condition') {
+        const { column, operator, value } = condition;
+        const matchingIndices = [];
+        
+        workbookData.forEach((row, index) => {
+            const cellValue = row[column];
+            const cellStr = String(cellValue).toLowerCase();
+            const valueLower = value.toLowerCase();
+            const cellNum = parseFloat(cellValue);
+            const valueNum = parseFloat(value);
+            
+            let matches = false;
+            switch (operator) {
+                case '>':
+                    matches = !isNaN(cellNum) && !isNaN(valueNum) && cellNum > valueNum;
+                    break;
+                case '<':
+                    matches = !isNaN(cellNum) && !isNaN(valueNum) && cellNum < valueNum;
+                    break;
+                case '>=':
+                    matches = !isNaN(cellNum) && !isNaN(valueNum) && cellNum >= valueNum;
+                    break;
+                case '<=':
+                    matches = !isNaN(cellNum) && !isNaN(valueNum) && cellNum <= valueNum;
+                    break;
+                case '=':
+                case '==':
+                case 'equals':
+                case 'equal':
+                case 'is':
+                case 'igual':
+                    matches = cellStr === valueLower || cellNum === valueNum;
+                    break;
+                case '!=':
+                    matches = cellStr !== valueLower && cellNum !== valueNum;
+                    break;
+                case 'contains':
+                case 'contiene':
+                case 'conté':
+                    matches = cellStr.includes(valueLower);
+                    break;
+            }
+            
+            if (matches) matchingIndices.push(index);
+        });
+        
+        return { type: 'indices', indices: matchingIndices };
+    }
+    
+    return null;
+}
+
+function getOptimizedData(colIndices, rowFilter) {
+    // Determine which rows to include
+    let rowIndices = [];
+    if (!rowFilter) {
+        rowIndices = workbookData.map((_, i) => i);
+    } else if (rowFilter.type === 'range') {
+        for (let i = rowFilter.start; i < rowFilter.end; i++) {
+            rowIndices.push(i);
+        }
+    } else if (rowFilter.type === 'indices') {
+        rowIndices = rowFilter.indices;
+    }
+    
+    // Determine which columns to include
+    const colsToUse = colIndices || headers.map((_, i) => i);
+    
+    // Always include at least one identifier column (first column or first non-empty)
+    if (colIndices && colIndices.length > 0 && !colIndices.includes(0)) {
+        // Add first column as identifier if not already included
+        colsToUse.unshift(0);
+    }
+    
+    // Build optimized headers
+    const optHeaders = colsToUse.map(ci => headers[ci]);
+    
+    // Build optimized data with row index tracking
+    const optData = rowIndices.map(ri => {
+        const row = colsToUse.map(ci => workbookData[ri][ci]);
+        return row;
+    });
+    
+    return {
+        headers: optHeaders,
+        data: optData,
+        colMapping: colsToUse,
+        rowMapping: rowIndices,
+        isOptimized: colIndices !== null || rowFilter !== null
+    };
+}
+
+function mergeOptimizedResults(originalData, aiResult, optimization) {
+    if (!optimization.isOptimized) {
+        // Not optimized, use standard merge
+        return aiResult;
+    }
+    
+    const { colMapping, rowMapping } = optimization;
+    
+    // Create a copy of original data
+    let newHeaders = [...headers];
+    let newData = originalData.map(r => [...r]);
+    
+    // Check if AI added new columns
+    const aiHeadersLower = aiResult.headers.map(h => String(h).toLowerCase().trim());
+    const newColsFromAI = [];
+    
+    aiResult.headers.forEach((h, ai) => {
+        const hLower = String(h).toLowerCase().trim();
+        const existingIndex = headers.findIndex(oh => String(oh).toLowerCase().trim() === hLower);
+        if (existingIndex === -1 && !colMapping.some(ci => headers[ci]?.toLowerCase().trim() === hLower)) {
+            newColsFromAI.push({ header: h, aiIndex: ai });
+            newHeaders.push(h);
+            newData.forEach(r => r.push(''));
+        }
+    });
+    
+    // Map AI results back to original positions
+    aiResult.data.forEach((aiRow, aiRowIndex) => {
+        const originalRowIndex = rowMapping[aiRowIndex];
+        if (originalRowIndex === undefined || originalRowIndex >= newData.length) return;
+        
+        aiRow.forEach((value, aiColIndex) => {
+            // Find the original column index
+            const aiHeader = aiResult.headers[aiColIndex];
+            const aiHeaderLower = String(aiHeader).toLowerCase().trim();
+            
+            // Check if it's a mapped column
+            let originalColIndex = -1;
+            if (aiColIndex < colMapping.length) {
+                const mappedCol = colMapping[aiColIndex];
+                if (headers[mappedCol]?.toLowerCase().trim() === aiHeaderLower) {
+                    originalColIndex = mappedCol;
+                }
+            }
+            
+            // If not found in mapping, search in all headers
+            if (originalColIndex === -1) {
+                originalColIndex = newHeaders.findIndex(h => String(h).toLowerCase().trim() === aiHeaderLower);
+            }
+            
+            if (originalColIndex !== -1 && value !== undefined) {
+                newData[originalRowIndex][originalColIndex] = value;
+            }
+        });
+    });
+    
+    return { headers: newHeaders, data: newData };
+}
+
+async function processOptimizedRequest(prompt) {
+    addChatMessage('ai', t('processing'));
+    
+    // Detect relevant columns and rows
+    const relevantCols = detectRelevantColumns(prompt);
+    const rowFilter = filterRowsByCondition(detectRelevantRows(prompt));
+    
+    // Get optimized dataset
+    const optimization = getOptimizedData(relevantCols, rowFilter);
+    
+    // Show optimization info if applicable
+    if (optimization.isOptimized) {
+        const colCount = optimization.headers.length;
+        const rowCount = optimization.data.length;
+        const totalCols = headers.length;
+        const totalRows = workbookData.length;
+        
+        if (colCount < totalCols || rowCount < totalRows) {
+            const saved = Math.round((1 - (colCount * rowCount) / (totalCols * totalRows)) * 100);
+            if (saved > 10) {
+                updateProgressMessage(`${t('processing')} (${t('optimized') || 'optimized'}: ${colCount}/${totalCols} cols, ${rowCount}/${totalRows} rows)`);
+            }
+        }
+    }
+    
+    // Determine if we need batching
+    const dataSize = optimization.data.length;
+    
+    if (dataSize > 100) {
+        await processLargeDatasetOptimized(prompt, optimization);
+    } else {
+        await processSingleRequestOptimized(prompt, optimization);
+    }
+}
+
+async function processSingleRequestOptimized(prompt, optimization) {
+    const res = await callAI(optimization.headers, optimization.data, prompt, 1, 1);
+    
+    if (shouldStopProcessing) {
+        if (preProcessingState) {
+            headers = preProcessingState.headers;
+            workbookData = preProcessingState.data;
+            cellColors = preProcessingState.colors;
+            modifiedCells = preProcessingState.modifiedCells;
+        }
+        removeProgressMessage();
+        addChatMessage('system', t('processingCancelled'));
+        renderTable();
+        return;
+    }
+    
+    removeProgressMessage();
+    
+    if (res.type === 'question') {
+        addChatMessage('ai', res.answer);
+        history.pop();
+    } else if (res.type === 'modification' && res.headers && res.data) {
+        const oh = [...headers], od = workbookData.map(r => [...r]);
+        
+        // Merge optimized results back
+        let mergedResult;
+        if (optimization.isOptimized) {
+            mergedResult = mergeOptimizedResults(od, res, optimization);
+        } else {
+            mergedResult = mergeAIChangesIntoOriginal(od, res.data, oh, res.headers, prompt);
+        }
+        
+        headers = mergedResult.headers || oh;
+        workbookData = mergedResult.data || mergedResult;
+        
+        if (workbookData.length < od.length && !userAskedToDeleteRows(prompt)) {
+            workbookData = od.map(r => [...r]);
+            addChatMessage('system', '🛡️ Emergency protection activated.');
+        }
+        
+        const { changes, modified } = detectChanges(oh, od, headers, workbookData);
+        modifiedCells = modified;
+        lastAIChange = { before: { headers: oh, data: od }, after: { headers, data: workbookData } };
+        renderTable();
+        
+        if (mergedResult.message) addChatMessage('system', mergedResult.message);
+        addChatMessage('ai', `✓ ${res.description || changes.join(', ') || 'Changes applied'}`);
+    } else if (res.headers && res.data) {
+        // Handle non-optimized full replacement
+        if (!optimization.isOptimized) {
+            headers = res.headers;
+            workbookData = res.data;
+        } else {
+            const mergedResult = mergeOptimizedResults(workbookData, res, optimization);
+            headers = mergedResult.headers;
+            workbookData = mergedResult.data;
+        }
+        renderTable();
+        addChatMessage('ai', t('changesApplied'));
+    } else {
+        throw new Error('Invalid response');
+    }
+}
+
+async function processLargeDatasetOptimized(prompt, optimization) {
+    const bs = calculateDynamicBatchSize();
+    const tb = Math.ceil(optimization.data.length / bs);
+    addChatMessage('system', t('largeDataset', { rows: optimization.data.length, batches: tb }));
+    
+    const oh = [...headers], od = workbookData.map(r => [...r]);
+    const am = new Set();
+    
+    for (let i = 0; i < tb; i++) {
+        if (shouldStopProcessing) {
+            headers = preProcessingState.headers;
+            workbookData = preProcessingState.data;
+            cellColors = preProcessingState.colors;
+            modifiedCells = preProcessingState.modifiedCells;
+            removeProgressMessage();
+            addChatMessage('system', t('processingCancelled'));
+            renderTable();
+            return;
+        }
+        
+        const start = i * bs, end = Math.min(start + bs, optimization.data.length);
+        const batchData = optimization.data.slice(start, end);
+        const batchRowMapping = optimization.rowMapping.slice(start, end);
+        
+        updateProgressMessage(t('processingBatch', { current: i + 1, total: tb, start: start + 1, end }));
+        
+        try {
+            const res = await callAI(optimization.headers, batchData, prompt, i + 1, tb);
+            if (shouldStopProcessing) continue;
+            
+            if (res.type === 'modification' && res.data) {
+                res.data.forEach((row, ri) => {
+                    const originalRowIndex = batchRowMapping[ri];
+                    if (originalRowIndex === undefined || originalRowIndex >= workbookData.length) return;
+                    
+                    row.forEach((val, ci) => {
+                        // Map back to original column
+                        const originalColIndex = optimization.colMapping[ci];
+                        if (originalColIndex !== undefined && originalColIndex < headers.length) {
+                            if (String(workbookData[originalRowIndex][originalColIndex]) !== String(val)) {
+                                workbookData[originalRowIndex][originalColIndex] = val;
+                                am.add(`${originalRowIndex}-${originalColIndex}`);
+                            }
+                        }
+                    });
+                });
+            } else if (res.type === 'question' && i === 0) {
+                removeProgressMessage();
+                addChatMessage('ai', res.answer);
+                history.pop();
+                return;
+            }
+            
+            if (i < tb - 1) await new Promise(r => setTimeout(r, 300));
+        } catch (be) {
+            addChatMessage('system', `⚠️ Batch ${i + 1} failed: ${be.message}`);
+        }
+    }
+    
+    removeProgressMessage();
+    modifiedCells = am;
+    lastAIChange = { before: { headers: oh, data: od }, after: { headers, data: workbookData } };
+    renderTable();
+    addChatMessage('ai', t('batchesComplete', { batches: tb, cells: am.size }));
 }
 
 function mergeAIChangesIntoOriginal(originalData, aiData, originalHeaders, aiHeaders, prompt) {
@@ -1254,6 +1695,202 @@ function removeProgressMessage() {
     const msgs = chatMessages.querySelectorAll('.message.ai'), last = msgs[msgs.length - 1];
     if (last && (last.textContent === t('processing') || last.textContent.includes('Processing') || last.textContent.includes('batch'))) last.remove();
 }
+// =====================================
+// SAVE DIALOG (Ctrl+S) - Native Windows Dialog
+// =====================================
+let hasUnsavedChanges = false;
+let pendingExitAfterSave = false;
+
+// Check if running in Electron (electronAPI exposed via preload)
+const isElectron = typeof window.electronAPI !== 'undefined';
+
+// Track changes
+function markUnsavedChanges() {
+    hasUnsavedChanges = true;
+    if (isElectron) {
+        window.electronAPI.setUnsavedChanges(true);
+    }
+}
+
+function clearUnsavedChanges() {
+    hasUnsavedChanges = false;
+    if (isElectron) {
+        window.electronAPI.setUnsavedChanges(false);
+    }
+}
+
+// Listen for save-before-exit trigger from main process
+if (isElectron) {
+    window.electronAPI.onTriggerSaveBeforeExit(() => {
+        pendingExitAfterSave = true;
+        openSaveDialog();
+    });
+}
+
+async function openSaveDialog() {
+    if (!workbookData.length) {
+        showToast(t('noDataToSave') || 'No data to save');
+        return;
+    }
+    
+    if (isElectron) {
+        // Use native Windows save dialog via Electron
+        const defaultName = originalFileName || 'spreadsheet';
+        const currentFormat = exportFormat?.value || 'xlsx';
+        
+        try {
+            const result = await window.electronAPI.showSaveDialog(defaultName, currentFormat);
+            
+            if (!result.canceled && result.filePath) {
+                await performNativeSave(result.filePath);
+            } else {
+                // User cancelled
+                pendingExitAfterSave = false;
+            }
+        } catch (error) {
+            console.error('Save dialog error:', error);
+            showToast(t('saveError') || 'Error saving file');
+            pendingExitAfterSave = false;
+        }
+    } else {
+        // Fallback for browser - use download
+        performBrowserDownload();
+    }
+}
+
+async function performNativeSave(filePath) {
+    try {
+        // Determine format from file extension
+        const ext = filePath.split('.').pop().toLowerCase();
+        const format = ext === 'csv' ? 'csv' : ext === 'xls' ? 'xls' : 'xlsx';
+        
+        // Create workbook
+        const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
+        for (let c in cellColors) {
+            if (ws[c]) ws[c].s = { fgColor: { rgb: cellColors[c].slice(1) } };
+        }
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+        
+        // Write to buffer
+        const wbout = XLSX.write(wb, { 
+            bookType: format, 
+            type: 'array'
+        });
+        
+        // Save via IPC
+        const result = await window.electronAPI.writeFile(filePath, wbout);
+        
+        if (result.success) {
+            clearUnsavedChanges();
+            const fileName = filePath.split(/[\\/]/).pop();
+            showToast(t('fileSaved') || 'File saved successfully!');
+            addChatMessage('system', t('fileSavedAs', { filename: fileName }) || `File saved as ${fileName}`);
+            
+            // If we were saving before exit, now close the app
+            if (pendingExitAfterSave) {
+                pendingExitAfterSave = false;
+                window.electronAPI.saveCompletedExit();
+            }
+        } else {
+            throw new Error(result.error);
+        }
+    } catch (error) {
+        console.error('Save error:', error);
+        showToast(t('saveError') || 'Error saving file: ' + error.message);
+        pendingExitAfterSave = false;
+    }
+}
+
+function performBrowserDownload() {
+    // Fallback for browser environment
+    const fmt = exportFormat?.value || 'xlsx';
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...workbookData]);
+    for (let c in cellColors) if (ws[c]) ws[c].s = { fgColor: { rgb: cellColors[c].slice(1) } };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, `${originalFileName || 'spreadsheet'}.${fmt}`, fmt === 'csv' ? { bookType: 'csv' } : fmt === 'xls' ? { bookType: 'xls' } : {});
+    clearUnsavedChanges();
+    showToast(t('fileSaved') || 'File saved successfully!');
+}
+
+function closeSaveDialog() {
+    // No longer needed with native dialog, but keep for compatibility
+}
+
+// Browser close/refresh warning (for when not in Electron)
+window.addEventListener('beforeunload', (e) => {
+    if (hasUnsavedChanges && workbookData.length > 0 && !isElectron) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    }
+});
+
+// =====================================
+// COLUMN SORTING
+// =====================================
+let sortState = { column: null, direction: null }; // null, 'asc', 'desc'
+
+function sortByColumn(colIndex) {
+    if (!workbookData.length) return;
+    
+    saveState('sort');
+    markUnsavedChanges();
+    
+    // Determine sort direction
+    if (sortState.column === colIndex) {
+        if (sortState.direction === 'asc') {
+            sortState.direction = 'desc';
+        } else if (sortState.direction === 'desc') {
+            sortState.direction = null; // Reset to original
+            sortState.column = null;
+            // Restore original order - we can't easily do this without storing original indices
+            // So we just keep desc as the last state
+            sortState.direction = 'asc';
+        } else {
+            sortState.direction = 'asc';
+        }
+    } else {
+        sortState.column = colIndex;
+        sortState.direction = 'asc';
+    }
+    
+    workbookData.sort((a, b) => {
+        let valA = a[colIndex];
+        let valB = b[colIndex];
+        
+        // Handle empty values - put them at the end
+        if (valA === '' || valA === null || valA === undefined) return 1;
+        if (valB === '' || valB === null || valB === undefined) return -1;
+        
+        // Try numeric comparison first
+        const numA = parseFloat(valA);
+        const numB = parseFloat(valB);
+        
+        if (!isNaN(numA) && !isNaN(numB)) {
+            return sortState.direction === 'asc' ? numA - numB : numB - numA;
+        }
+        
+        // Try date comparison
+        const dateA = new Date(valA);
+        const dateB = new Date(valB);
+        if (!isNaN(dateA.getTime()) && !isNaN(dateB.getTime())) {
+            return sortState.direction === 'asc' ? dateA - dateB : dateB - dateA;
+        }
+        
+        // String comparison (case-insensitive)
+        const strA = String(valA).toLowerCase();
+        const strB = String(valB).toLowerCase();
+        const comparison = strA.localeCompare(strB);
+        return sortState.direction === 'asc' ? comparison : -comparison;
+    });
+    
+    renderTable();
+    const directionText = sortState.direction === 'asc' ? '↑' : '↓';
+    showToast(t('sortedBy', { column: headers[colIndex], direction: directionText }) || `Sorted by ${headers[colIndex]} ${directionText}`);
+}
+
 // =====================================
 // HELP MODAL
 // =====================================

@@ -17,7 +17,7 @@ const translations = {
         exportFormatLabel: "Format:",
         darkModeLabel: "Dark",
         lightModeLabel: "Light",
-        promptPlaceholder: "Ask questions about your data or request modifications...\ne.g., 'What's the total of column B?' or 'Add 10% to all prices'",
+        promptPlaceholder: "Enter your prompt here...",
         apiKeyLoaded: "✓ API Key loaded successfully!",
         fileLoaded: "✓ Loaded {rows} rows and {cols} columns from \"{filename}\"",
         errorEmpty: "Error: File is empty",
@@ -140,11 +140,35 @@ const translations = {
         helpHighlight: "Toggle to see AI-modified cells",
         helpExportLabel: "Export Formats:",
         helpExport: "Download as .xlsx, .xls, or .csv",
+        helpSortLabel: "Column Sorting:",
+        helpSort: "Click column header text to sort (A-Z, Z-A)",
         helpAITipsTitle: "💡 AI Tips",
         helpAITip1: "• Ask questions: \"What's the sum of column B?\" or \"How many rows have sales > 1000?\"",
         helpAITip2: "• Request modifications: \"Add 10% to all prices\" or \"Convert names to uppercase\"",
         helpAITip3: "• Add data: \"Add a new column called 'Total' with the sum of columns B and C\"",
-        helpAITip4: "• For large datasets (100+ rows), processing is done in batches automatically"
+        helpAITip4: "• For large datasets (100+ rows), processing is done in batches automatically",
+        // Save dialog translations
+        saveDialogTitle: "Save File",
+        fileNameLabel: "File name:",
+        saveFormatLabel: "Format:",
+        cancel: "Cancel",
+        saveFile: "Save",
+        noDataToSave: "No data to save",
+        fileSaved: "File saved successfully!",
+        fileSavedAs: "File saved as {filename}",
+        // Exit dialog translations
+        exitDialogTitle: "Exit Application",
+        exitMessage: "Are you sure you want to exit?",
+        exitUnsavedMessage: "You have unsaved changes that will be lost.",
+        saveAndExit: "Save & Exit",
+        exitWithoutSaving: "Exit without saving",
+        // Sort translations
+        clickToSort: "Click to sort",
+        sortedBy: "Sorted by {column} {direction}",
+        // Keyboard shortcut addition
+        helpSave: "Save file",
+        // Optimization
+        optimized: "optimized"
     },
     es: {
         mainTitle: "Editor Excel IA de Albert",
@@ -164,7 +188,7 @@ const translations = {
         exportFormatLabel: "Formato:",
         darkModeLabel: "Oscuro",
         lightModeLabel: "Claro",
-        promptPlaceholder: "Haz preguntas sobre tus datos o solicita modificaciones...\nej., '¿Cuál es el total de la columna B?' o 'Añade un 10% a todos los precios'",
+        promptPlaceholder: "Introduce tu mensaje aquí...",
         apiKeyLoaded: "✓ ¡Clave API cargada con éxito!",
         fileLoaded: "✓ Cargadas {rows} filas y {cols} columnas de \"{filename}\"",
         errorEmpty: "Error: El archivo está vacío",
@@ -287,11 +311,35 @@ const translations = {
         helpHighlight: "Activar para ver celdas modificadas por IA",
         helpExportLabel: "Formatos de Exportación:",
         helpExport: "Descargar como .xlsx, .xls o .csv",
+        helpSortLabel: "Ordenar Columnas:",
+        helpSort: "Clic en texto del encabezado para ordenar (A-Z, Z-A)",
         helpAITipsTitle: "💡 Consejos de IA",
         helpAITip1: "• Haz preguntas: \"¿Cuál es la suma de la columna B?\" o \"¿Cuántas filas tienen ventas > 1000?\"",
         helpAITip2: "• Solicita modificaciones: \"Añade un 10% a todos los precios\" o \"Convierte nombres a mayúsculas\"",
         helpAITip3: "• Añade datos: \"Añade una columna llamada 'Total' con la suma de columnas B y C\"",
-        helpAITip4: "• Para conjuntos grandes (100+ filas), el procesamiento se hace en lotes automáticamente"
+        helpAITip4: "• Para conjuntos grandes (100+ filas), el procesamiento se hace en lotes automáticamente",
+        // Save dialog translations
+        saveDialogTitle: "Guardar Archivo",
+        fileNameLabel: "Nombre del archivo:",
+        saveFormatLabel: "Formato:",
+        cancel: "Cancelar",
+        saveFile: "Guardar",
+        noDataToSave: "No hay datos para guardar",
+        fileSaved: "¡Archivo guardado con éxito!",
+        fileSavedAs: "Archivo guardado como {filename}",
+        // Exit dialog translations
+        exitDialogTitle: "Salir de la Aplicación",
+        exitMessage: "¿Estás seguro de que quieres salir?",
+        exitUnsavedMessage: "Tienes cambios sin guardar que se perderán.",
+        saveAndExit: "Guardar y Salir",
+        exitWithoutSaving: "Salir sin guardar",
+        // Sort translations
+        clickToSort: "Clic para ordenar",
+        sortedBy: "Ordenado por {column} {direction}",
+        // Keyboard shortcut addition
+        helpSave: "Guardar archivo",
+        // Optimization
+        optimized: "optimizado"
     },
     ca: {
         mainTitle: "Editor Excel IA d'Albert",
@@ -311,7 +359,7 @@ const translations = {
         exportFormatLabel: "Format:",
         darkModeLabel: "Fosc",
         lightModeLabel: "Clar",
-        promptPlaceholder: "Fes preguntes sobre les teves dades o sol·licita modificacions...\nex., 'Quin és el total de la columna B?' o 'Afegeix un 10% a tots els preus'",
+        promptPlaceholder: "Introdueix el teu missatge aquí...",
         apiKeyLoaded: "✓ Clau API carregada amb èxit!",
         fileLoaded: "✓ Carregades {rows} files i {cols} columnes de \"{filename}\"",
         errorEmpty: "Error: L'arxiu està buit",
@@ -434,11 +482,35 @@ const translations = {
         helpHighlight: "Activar per veure cel·les modificades per IA",
         helpExportLabel: "Formats d'Exportació:",
         helpExport: "Descarregar com .xlsx, .xls o .csv",
+        helpSortLabel: "Ordenar Columnes:",
+        helpSort: "Clic al text de l'encapçalament per ordenar (A-Z, Z-A)",
         helpAITipsTitle: "💡 Consells d'IA",
         helpAITip1: "• Fes preguntes: \"Quina és la suma de la columna B?\" o \"Quantes files tenen vendes > 1000?\"",
         helpAITip2: "• Sol·licita modificacions: \"Afegeix un 10% a tots els preus\" o \"Converteix noms a majúscules\"",
         helpAITip3: "• Afegeix dades: \"Afegeix una columna anomenada 'Total' amb la suma de columnes B i C\"",
-        helpAITip4: "• Per conjunts grans (100+ files), el processament es fa en lots automàticament"
+        helpAITip4: "• Per conjunts grans (100+ files), el processament es fa en lots automàticament",
+        // Save dialog translations
+        saveDialogTitle: "Desar Arxiu",
+        fileNameLabel: "Nom de l'arxiu:",
+        saveFormatLabel: "Format:",
+        cancel: "Cancel·lar",
+        saveFile: "Desar",
+        noDataToSave: "No hi ha dades per desar",
+        fileSaved: "Arxiu desat amb èxit!",
+        fileSavedAs: "Arxiu desat com {filename}",
+        // Exit dialog translations
+        exitDialogTitle: "Sortir de l'Aplicació",
+        exitMessage: "Estàs segur que vols sortir?",
+        exitUnsavedMessage: "Tens canvis sense desar que es perdran.",
+        saveAndExit: "Desar i Sortir",
+        exitWithoutSaving: "Sortir sense desar",
+        // Sort translations
+        clickToSort: "Clic per ordenar",
+        sortedBy: "Ordenat per {column} {direction}",
+        // Keyboard shortcut addition
+        helpSave: "Desar arxiu",
+        // Optimization
+        optimized: "optimitzat"
     }
 };
 
@@ -516,6 +588,9 @@ function updateLanguage(lang) {
         'helpHighlight': 'helpHighlight',
         'helpExportLabel': 'helpExportLabel',
         'helpExport': 'helpExport',
+        'helpSortLabel': 'helpSortLabel',
+        'helpSort': 'helpSort',
+        'helpSave': 'helpSave',
         'helpAITipsTitle': 'helpAITipsTitle',
         'helpAITip1': 'helpAITip1',
         'helpAITip2': 'helpAITip2',
