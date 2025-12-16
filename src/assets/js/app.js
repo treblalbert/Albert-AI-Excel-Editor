@@ -29,6 +29,9 @@ let clipboard = [];
 const apiSetup = document.getElementById('apiSetup');
 const mainApp = document.getElementById('mainApp');
 const apiKeyFile = document.getElementById('apiKeyFile');
+const apiKeyFileLater = document.getElementById('apiKeyFileLater');
+const skipAiBtn = document.getElementById('skipAiBtn');
+const noAiOverlay = document.getElementById('noAiOverlay');
 const excelFile = document.getElementById('excelFile');
 const aiPrompt = document.getElementById('aiPrompt');
 const aiButton = document.getElementById('aiButton');
@@ -47,6 +50,9 @@ const highlightToggle = document.getElementById('highlightToggle');
 const compareModal = document.getElementById('compareModal');
 const closeCompareModal = document.getElementById('closeCompareModal');
 const themeToggle = document.getElementById('themeToggle');
+
+// AI Mode flag
+let aiModeEnabled = false;
 
 // Theme
 function initTheme() {
@@ -122,8 +128,33 @@ apiKeyFile.addEventListener('change', async (e) => {
     apiKeyPath = file.name;
     localStorage.setItem('apiKeyPath', file.name);
     addChatMessage('system', t('apiKeyLoaded'));
+    aiModeEnabled = true;
     apiSetup.classList.add('hidden');
     mainApp.classList.remove('hidden');
+    noAiOverlay.classList.add('hidden');
+    updateButtonStates();
+});
+
+// Skip AI - continue without AI features
+skipAiBtn.addEventListener('click', () => {
+    aiModeEnabled = false;
+    apiSetup.classList.add('hidden');
+    mainApp.classList.remove('hidden');
+    noAiOverlay.classList.remove('hidden');
+    addChatMessage('system', t('noAiModeActive') || 'Editor mode without AI features. You can load an API key anytime to enable AI.');
+    updateButtonStates();
+});
+
+// Load API key later (from chat overlay)
+apiKeyFileLater.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    apiKey = (await file.text()).trim();
+    apiKeyPath = file.name;
+    localStorage.setItem('apiKeyPath', file.name);
+    aiModeEnabled = true;
+    noAiOverlay.classList.add('hidden');
+    addChatMessage('system', t('apiKeyLoaded'));
     updateButtonStates();
 });
 
@@ -1042,7 +1073,7 @@ function startResize(e, colIndex, th) {
 // =====================================
 function updateButtonStates() {
     const hasData = workbookData.length > 0;
-    const hasApiKey = apiKey !== '';
+    const hasApiKey = apiKey !== '' && aiModeEnabled;
     addRowBtn.disabled = !hasData;
     addColBtn.disabled = !hasData;
     compareBtn.disabled = !history.length;
@@ -1050,6 +1081,16 @@ function updateButtonStates() {
     aiPrompt.disabled = !hasData || !hasApiKey;
     aiButton.disabled = !hasData || !hasApiKey;
     undoBtn.disabled = !history.length;
+    
+    // Update chat input area appearance
+    const chatInputArea = document.querySelector('.chat-input-area');
+    if (chatInputArea) {
+        if (!aiModeEnabled) {
+            chatInputArea.classList.add('disabled');
+        } else {
+            chatInputArea.classList.remove('disabled');
+        }
+    }
 }
 
 // =====================================

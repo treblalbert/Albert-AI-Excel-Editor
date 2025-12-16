@@ -1952,3 +1952,88 @@ th .header-content {
         width: 100%;
     }
 }
+
+/* =====================================
+   SKIP AI / NO AI MODE STYLES
+   ===================================== */
+.skip-ai-container {
+    margin-top: 20px;
+    text-align: center;
+}
+
+.skip-ai-btn {
+    background: transparent;
+    border: 1px solid var(--border-light);
+    color: var(--text-medium);
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.skip-ai-btn:hover {
+    background: var(--bg-highlight);
+    color: var(--text-dark);
+    border-color: var(--primary-teal);
+}
+
+.no-ai-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(45, 62, 80, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    border-radius: 8px;
+}
+
+.no-ai-overlay.hidden {
+    display: none;
+}
+
+[data-theme="dark"] .no-ai-overlay {
+    background: rgba(18, 24, 32, 0.9);
+}
+
+.no-ai-content {
+    text-align: center;
+    color: #ffffff;
+}
+
+.no-ai-content span {
+    display: block;
+    margin-bottom: 15px;
+    font-size: 0.95rem;
+    opacity: 0.9;
+}
+
+.load-api-btn {
+    display: inline-block;
+    background: var(--primary-teal);
+    color: #ffffff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.load-api-btn:hover {
+    background: var(--primary-teal-light);
+    transform: translateY(-1px);
+}
+
+.chat-section {
+    position: relative;
+}
+
+/* Disabled state for chat when no AI */
+.chat-input-area.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}

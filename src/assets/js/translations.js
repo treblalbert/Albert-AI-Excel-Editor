@@ -168,7 +168,12 @@ const translations = {
         // Keyboard shortcut addition
         helpSave: "Save file",
         // Optimization
-        optimized: "optimized"
+        optimized: "optimized",
+        // No AI mode
+        skipAiText: "Continue without AI features",
+        noAiMessage: "AI features disabled",
+        loadApiKeyText: "Load API Key",
+        noAiModeActive: "Editor mode without AI features. You can load an API key anytime to enable AI."
     },
     es: {
         mainTitle: "Editor Excel IA de Albert",
@@ -339,7 +344,12 @@ const translations = {
         // Keyboard shortcut addition
         helpSave: "Guardar archivo",
         // Optimization
-        optimized: "optimizado"
+        optimized: "optimizado",
+        // No AI mode
+        skipAiText: "Continuar sin funciones de IA",
+        noAiMessage: "Funciones de IA desactivadas",
+        loadApiKeyText: "Cargar API Key",
+        noAiModeActive: "Modo editor sin funciones de IA. Puedes cargar una API key en cualquier momento para activar la IA."
     },
     ca: {
         mainTitle: "Editor Excel IA d'Albert",
@@ -510,7 +520,12 @@ const translations = {
         // Keyboard shortcut addition
         helpSave: "Desar arxiu",
         // Optimization
-        optimized: "optimitzat"
+        optimized: "optimitzat",
+        // No AI mode
+        skipAiText: "Continuar sense funcions d'IA",
+        noAiMessage: "Funcions d'IA desactivades",
+        loadApiKeyText: "Carregar API Key",
+        noAiModeActive: "Mode editor sense funcions d'IA. Pots carregar una API key en qualsevol moment per activar la IA."
     }
 };
 
@@ -595,7 +610,11 @@ function updateLanguage(lang) {
         'helpAITip1': 'helpAITip1',
         'helpAITip2': 'helpAITip2',
         'helpAITip3': 'helpAITip3',
-        'helpAITip4': 'helpAITip4'
+        'helpAITip4': 'helpAITip4',
+        // No AI mode
+        'skipAiText': 'skipAiText',
+        'noAiMessage': 'noAiMessage',
+        'loadApiKeyText': 'loadApiKeyText'
     };
 
     for (const [id, key] of Object.entries(elements)) {

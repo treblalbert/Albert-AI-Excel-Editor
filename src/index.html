@@ -37,6 +37,11 @@
                 <div class="control-group">
                     <input type="file" id="apiKeyFile" accept=".txt">
                 </div>
+                <div class="skip-ai-container">
+                    <button id="skipAiBtn" class="skip-ai-btn">
+                        <span id="skipAiText">Continue without AI features</span>
+                    </button>
+                </div>
                 <p id="securityNote" style="margin-top: 20px; font-size: 0.9em; color: var(--text-light);">
                     Your API key is stored securely in your browser and never leaves your device.
                 </p>
@@ -86,6 +91,15 @@
                     <div class="chat-section">
                         <div class="chat-header"><span id="chatHeaderText">AI Assistant</span></div>
                         <div class="chat-messages" id="chatMessages"></div>
+                        <div id="noAiOverlay" class="no-ai-overlay hidden">
+                            <div class="no-ai-content">
+                                <span id="noAiMessage">AI features disabled</span>
+                                <label class="load-api-btn">
+                                    <input type="file" id="apiKeyFileLater" accept=".txt" style="display: none;">
+                                    <span id="loadApiKeyText">Load API Key</span>
+                                </label>
+                            </div>
+                        </div>
                         <div class="chat-input-area">
                             <textarea id="aiPrompt" disabled></textarea>
                             <div class="chat-buttons">
